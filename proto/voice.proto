@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package tsbot.voice.v1;
+
+import "google/protobuf/empty.proto";
+
+service VoiceService {
+  rpc Ping(google.protobuf.Empty) returns (PingResponse);
+
+  rpc Play(PlayRequest) returns (CommandResponse);
+  rpc Pause(google.protobuf.Empty) returns (CommandResponse);
+  rpc Resume(google.protobuf.Empty) returns (CommandResponse);
+  rpc Stop(google.protobuf.Empty) returns (CommandResponse);
+  rpc Skip(google.protobuf.Empty) returns (CommandResponse);
+
+  rpc SetVolume(SetVolumeRequest) returns (CommandResponse);
+  rpc GetStatus(google.protobuf.Empty) returns (StatusResponse);
+
+  rpc SubscribeEvents(SubscribeRequest) returns (stream Event);
+}
+
+message PingResponse {
+  string version = 1;
+}
+
+message PlayRequest {
+  string source_url = 1;
+  string title = 2;
+  string requested_by = 3;
+}
+
+message SetVolumeRequest {
+  int32 volume_percent = 1;
+}
+
+message CommandResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message StatusResponse {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_IDLE = 1;
+    STATE_PLAYING = 2;
+    STATE_PAUSED = 3;
+    STATE_BUFFERING = 4;
+    STATE_ERROR = 5;
+  }
+
+  State state = 1;
+  string now_playing_title = 2;
+  string now_playing_source_url = 3;
+  int32 volume_percent = 4;
+}
+
+message SubscribeRequest {
+  bool include_chat = 1;
+  bool include_playback = 2;
+  bool include_log = 3;
+}
+
+message Event {
+  int64 unix_ms = 1;
+
+  oneof payload {
+    ChatEvent chat = 2;
+    PlaybackEvent playback = 3;
+    LogEvent log = 4;
+  }
+}
+
+message ChatEvent {
+  enum TargetMode {
+    TARGET_MODE_UNSPECIFIED = 0;
+    TARGET_MODE_PRIVATE = 1;
+    TARGET_MODE_CHANNEL = 2;
+    TARGET_MODE_SERVER = 3;
+  }
+
+  TargetMode target_mode = 1;
+  string invoker_unique_id = 2;
+  string invoker_name = 3;
+  string message = 4;
+}
+
+message PlaybackEvent {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_STARTED = 1;
+    TYPE_FINISHED = 2;
+    TYPE_ERROR = 3;
+  }
+
+  Type type = 1;
+  string title = 2;
+  string source_url = 3;
+  string detail = 4;
+}
+
+message LogEvent {
+  enum Level {
+    LEVEL_UNSPECIFIED = 0;
+    LEVEL_DEBUG = 1;
+    LEVEL_INFO = 2;
+    LEVEL_WARN = 3;
+    LEVEL_ERROR = 4;
+  }
+
+  Level level = 1;
+  string message = 2;
+}
