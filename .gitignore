@@ -24,6 +24,8 @@ backend/*.db*
 *.sqlite*
 backend/.env
 web/.env
+
 ts3sdk/
 ts_sdk_*.zip
 TeamSpeak3-Client-*.run
+logs/
