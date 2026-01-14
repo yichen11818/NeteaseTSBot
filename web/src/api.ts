@@ -1,53 +1,54 @@
-const API_BASE = (import.meta as any).env?.VITE_API_BASE || 'http://127.0.0.1:8000'
+const API_BASE = (import.meta as any).env?.VITE_API_BASE || 'http://127.0.0.1:8009'
 
-export type TokenResponse = { access_token: string }
-
-function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem('tsbot_token')
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
-
-export async function apiGet<T>(path: string): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
-    headers: { ...authHeaders() },
-  })
-  if (!r.ok) throw new Error(await r.text())
+async function requestJson<T>(
+  path: string,
+  init: RequestInit,
+): Promise<T> {
+  const r = await fetch(`${API_BASE}${path}`, init)
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(text)
+  }
   return (await r.json()) as T
 }
 
-export async function apiPost<T>(path: string, body: any): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify(body),
-  })
-  if (!r.ok) throw new Error(await r.text())
-  return (await r.json()) as T
+export async function apiGet<T>(path: string, extraHeaders?: Record<string, string>): Promise<T> {
+  return await requestJson<T>(
+    path,
+    {
+      headers: { ...(extraHeaders || {}) },
+    },
+  )
 }
 
-export async function apiPut<T>(path: string, body: any): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify(body),
-  })
-  if (!r.ok) throw new Error(await r.text())
-  return (await r.json()) as T
+export async function apiPost<T>(path: string, body: any, extraHeaders?: Record<string, string>): Promise<T> {
+  return await requestJson<T>(
+    path,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
+      body: JSON.stringify(body),
+    },
+  )
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
-    method: 'DELETE',
-    headers: { ...authHeaders() },
-  })
-  if (!r.ok) throw new Error(await r.text())
-  return (await r.json()) as T
+export async function apiPut<T>(path: string, body: any, extraHeaders?: Record<string, string>): Promise<T> {
+  return await requestJson<T>(
+    path,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
+      body: JSON.stringify(body),
+    },
+  )
 }
 
-export function setToken(token: string) {
-  localStorage.setItem('tsbot_token', token)
-}
-
-export function clearToken() {
-  localStorage.removeItem('tsbot_token')
+export async function apiDelete<T>(path: string, extraHeaders?: Record<string, string>): Promise<T> {
+  return await requestJson<T>(
+    path,
+    {
+      method: 'DELETE',
+      headers: { ...(extraHeaders || {}) },
+    },
+  )
 }
