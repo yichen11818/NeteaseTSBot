@@ -1,0 +1,10 @@
+TODO（按优先级）
+[目标定义 / MVP 边界]（高）
+MVP：连上 TS3 + 进频道 + 收到聊天消息 + 播放队列音频（最基本可用）
+非 MVP：权限系统、复杂 UI、歌词/搜索、多服务器支持等
+[稳定 voice-service]（高）
+清掉 free(): invalid size / segfault 等内存问题
+必要的日志、可复现、core/backtrace 手段
+[部署与运维]（低）
+一键启动脚本、env 模板、日志目录规范
+healthcheck、最小 README
