@@ -2,19 +2,21 @@ syntax = "proto3";
 
 package tsbot.voice.v1;
 
-import "google/protobuf/empty.proto";
+message Empty {}
 
 service VoiceService {
-  rpc Ping(google.protobuf.Empty) returns (PingResponse);
+  rpc Ping(Empty) returns (PingResponse);
 
   rpc Play(PlayRequest) returns (CommandResponse);
-  rpc Pause(google.protobuf.Empty) returns (CommandResponse);
-  rpc Resume(google.protobuf.Empty) returns (CommandResponse);
-  rpc Stop(google.protobuf.Empty) returns (CommandResponse);
-  rpc Skip(google.protobuf.Empty) returns (CommandResponse);
+  rpc Pause(Empty) returns (CommandResponse);
+  rpc Resume(Empty) returns (CommandResponse);
+  rpc Stop(Empty) returns (CommandResponse);
+  rpc Skip(Empty) returns (CommandResponse);
+
+  rpc SendNotice(NoticeRequest) returns (CommandResponse);
 
   rpc SetVolume(SetVolumeRequest) returns (CommandResponse);
-  rpc GetStatus(google.protobuf.Empty) returns (StatusResponse);
+  rpc GetStatus(Empty) returns (StatusResponse);
 
   rpc SubscribeEvents(SubscribeRequest) returns (stream Event);
 }
@@ -27,6 +29,7 @@ message PlayRequest {
   string source_url = 1;
   string title = 2;
   string requested_by = 3;
+  string notice = 4;
 }
 
 message SetVolumeRequest {
@@ -36,6 +39,10 @@ message SetVolumeRequest {
 message CommandResponse {
   bool ok = 1;
   string message = 2;
+}
+
+message NoticeRequest {
+  string message = 1;
 }
 
 message StatusResponse {

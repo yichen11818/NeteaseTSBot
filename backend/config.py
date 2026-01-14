@@ -10,14 +10,12 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    jwt_secret: str = "dev-change-me"
     cookie_key: str = "dev-cookie-key"
 
-    netease_api_base: str = "http://127.0.0.1:3000"
+    netease_api_base: str = "http://47.113.188.213:3000/"
     voice_grpc_addr: str = "127.0.0.1:50051"
 
-    admin_username: str = "admin"
-    admin_password: str = "admin"
+    admin_token: str = ""
 
 
 settings = Settings()
