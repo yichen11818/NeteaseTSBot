@@ -1,31 +1,105 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .venv/
 venv/
+env/
+ENV/
 dist/
 build/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
 
+# Node.js
 node_modules/
-.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+.npm
+.eslintcache
 
+# Build outputs
 voice-service/build/
+voice-service/target/
 web/dist/
 backend/data/
+
+# Rust
+voice-service/target/
+Cargo.lock
+
+# Databases
 backend/*.db
 backend/*.db*
 *.db
 *.db*
 *.sqlite
 *.sqlite*
+
+# Environment files
 backend/.env
 web/.env
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# TeamSpeak SDK
 ts3sdk/
 ts_sdk_*.zip
 TeamSpeak3-Client-*.run
+
+# Logs
 logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Generated files
+backend/_generated/
+*.pb2.py
+*.pb2_grpc.py
+
+# Audio files
+*.mp3
+*.wav
+*.flac
+*.aac
+*.ogg
+
+# Text files (if they contain sensitive data)
+txt
