@@ -15,6 +15,8 @@ use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use tracing::{error, info};
 
+mod logger;
+
 use tsclientlib::{Connection, DisconnectOptions, Identity, StreamItem};
 use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, OutPacket, PacketType};
 use tsclientlib::{events, MessageTarget};
@@ -42,6 +44,28 @@ struct PlaybackControl {
     cancel: CancellationToken,
     paused_tx: watch::Sender<bool>,
     handle: tokio::task::JoinHandle<()>,
+}
+
+struct ChildKillOnDrop {
+    child: Option<tokio::process::Child>,
+}
+
+impl ChildKillOnDrop {
+    fn new(child: tokio::process::Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn child_mut(&mut self) -> &mut tokio::process::Child {
+        self.child.as_mut().expect("child missing")
+    }
+}
+
+impl Drop for ChildKillOnDrop {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -332,7 +356,12 @@ impl VoiceServiceImpl {
         let mut pb = self.playback.lock().await;
         if let Some(p) = pb.take() {
             p.cancel.cancel();
-            p.handle.abort();
+            let abort_handle = p.handle.abort_handle();
+            let join = p.handle;
+            let r = tokio::time::timeout(Duration::from_secs(2), join).await;
+            if r.is_err() {
+                abort_handle.abort();
+            }
         }
     }
 }
@@ -348,6 +377,7 @@ async fn ts3_actor(
     mut audio_rx: mpsc::Receiver<OutPacket>,
     mut notice_rx: mpsc::Receiver<String>,
     events_tx: broadcast::Sender<voicev1::Event>,
+    shutdown_token: CancellationToken,
 ) -> Result<()> {
     let host = get_env("TSBOT_TS3_HOST", "127.0.0.1");
     let port = get_env("TSBOT_TS3_PORT", "9987");
@@ -428,6 +458,12 @@ async fn ts3_actor(
     let mut send_tick = tokio::time::interval(std::time::Duration::from_millis(20));
     loop {
         tokio::select! {
+            _ = shutdown_token.cancelled() => {
+                info!("TS3 actor received shutdown signal");
+                // Disconnect gracefully
+                let _ = con.disconnect(DisconnectOptions::new());
+                break;
+            }
             _ = event_tick.tick() => {
                 // Drain any events that are immediately ready.
                 let mut events = con.events();
@@ -545,7 +581,10 @@ async fn playback_loop(
     cancel: CancellationToken,
     status: Arc<Mutex<SharedStatus>>,
 ) -> Result<()> {
-    let mut child = tokio::process::Command::new("ffmpeg")
+    let playback_started = Instant::now();
+    info!(source_url = %source_url, "playback starting");
+
+    let child = tokio::process::Command::new("ffmpeg")
         .arg("-nostdin")
         .arg("-loglevel")
         .arg("error")
@@ -571,7 +610,9 @@ async fn playback_loop(
         .spawn()
         .map_err(|e| anyhow!("failed to start ffmpeg: {e}"))?;
 
-    if let Some(stderr) = child.stderr.take() {
+    let mut child = ChildKillOnDrop::new(child);
+
+    if let Some(stderr) = child.child_mut().stderr.take() {
         let src = source_url.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
@@ -582,6 +623,7 @@ async fn playback_loop(
     }
 
     let mut stdout = child
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| anyhow!("ffmpeg stdout missing"))?;
@@ -628,18 +670,19 @@ async fn playback_loop(
     let mut ticker = tokio::time::interval(frame_duration);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut underruns: u64 = 0;
+    let mut logged_first_pcm = false;
 
-    loop {
+    'main: loop {
         if cancel.is_cancelled() {
             break;
         }
 
         while *paused_rx.borrow() {
             tokio::select! {
-                _ = cancel.cancelled() => { return Ok(()); }
+                _ = cancel.cancelled() => { break 'main; }
                 r = paused_rx.changed() => {
                     if r.is_err() {
-                        return Ok(());
+                        break 'main;
                     }
                 }
             }
@@ -655,6 +698,10 @@ async fn playback_loop(
             Ok(frame) => {
                 if frame.len() == frame_bytes {
                     pcm.copy_from_slice(&frame);
+                    if !logged_first_pcm {
+                        logged_first_pcm = true;
+                        info!(source_url = %source_url, first_pcm_ms = %playback_started.elapsed().as_millis(), "first pcm frame received");
+                    }
                 } else {
                     pcm.fill(0);
                     underruns += 1;
@@ -676,7 +723,12 @@ async fn playback_loop(
 
         let vol = {
             let st = status.lock().await;
-            (st.volume_percent as f32 / 100.0).clamp(0.0, 2.0)
+            let r = (st.volume_percent as f32 / 100.0).clamp(0.0, 2.0);
+            if r <= 1.0 {
+                r.powf(1.6)
+            } else {
+                r
+            }
         };
 
         for i in 0..(frame_samples_per_channel * channels) {
@@ -707,13 +759,16 @@ async fn playback_loop(
     });
     let _ = ts3_audio_tx.send(eos).await;
 
-    let _ = child.kill().await;
+    if let Some(mut c) = child.child.take() {
+        let _ = c.start_kill();
+        let _ = c.wait().await;
+    }
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    logger::init_logger();
 
     let addr = env::args().nth(1).unwrap_or_else(|| "127.0.0.1:50051".to_string());
 
@@ -722,14 +777,25 @@ async fn main() -> Result<()> {
 
     let (events_tx, _events_rx) = broadcast::channel::<voicev1::Event>(512);
 
-    {
+    // Create shutdown signal handler
+    let shutdown_token = CancellationToken::new();
+    let shutdown_token_clone = shutdown_token.clone();
+    
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl+c");
+        info!("Received Ctrl+C, shutting down gracefully...");
+        shutdown_token_clone.cancel();
+    });
+
+    let ts3_task = {
         let events_tx = events_tx.clone();
+        let shutdown_token_clone = shutdown_token.clone();
         tokio::spawn(async move {
-            if let Err(e) = ts3_actor(ts3_audio_rx, ts3_notice_rx, events_tx).await {
-            error!(%e, "ts3 actor exited");
+            if let Err(e) = ts3_actor(ts3_audio_rx, ts3_notice_rx, events_tx, shutdown_token_clone).await {
+                error!(%e, "ts3 actor exited");
             }
-        });
-    }
+        })
+    };
 
     let svc = VoiceServiceImpl {
         status: Arc::new(Mutex::new(SharedStatus {
@@ -751,11 +817,29 @@ async fn main() -> Result<()> {
 
     info!("voice-service listening on {}", listener.local_addr()?);
 
-    tonic::transport::Server::builder()
+    let server = tonic::transport::Server::builder()
         .add_service(VoiceServiceServer::new(svc))
-        .serve_with_incoming(TcpListenerStream::new(listener))
-        .await
-        .map_err(|e| anyhow!("grpc server failed: {e:?}"))?;
+        .serve_with_incoming_shutdown(
+            TcpListenerStream::new(listener),
+            shutdown_token.cancelled()
+        );
 
+    tokio::select! {
+        result = server => {
+            if let Err(e) = result {
+                error!("gRPC server failed: {e:?}");
+            }
+        }
+        _ = shutdown_token.cancelled() => {
+            info!("Server shutting down...");
+        }
+    }
+
+    // Wait for TS3 task to finish
+    if let Err(e) = ts3_task.await {
+        error!("Failed to wait for TS3 task: {e}");
+    }
+
+    info!("Voice service shutdown complete");
     Ok(())
 }
