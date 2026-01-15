@@ -75,117 +75,145 @@ onMounted(load)
 <template>
   <div class="h-full flex flex-col bg-gray-50">
     <!-- Header -->
-    <div class="bg-white border-b border-gray-200 p-6">
-      <div class="flex items-center justify-between mb-4">
-        <h1 class="text-2xl font-bold text-gray-900 flex items-center gap-2">
+    <div class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-20 shadow-sm">
+      <div class="flex items-center gap-4">
+        <h1 class="text-2xl font-bold text-gray-900 tracking-tight flex items-center gap-2">
           <Heart :size="28" class="text-red-500" fill="currentColor" />
           我的喜欢
         </h1>
-        <button 
-          @click="load"
-          :disabled="loading"
-          class="btn-secondary flex items-center gap-2"
-        >
-          <RefreshCw :size="16" :class="{ 'animate-spin': loading }" />
-          刷新
-        </button>
+        <span class="text-sm text-gray-500 hidden md:inline-block border-l border-gray-200 pl-4 h-5 leading-5">
+          显示您在网易云音乐中收藏的歌曲
+        </span>
       </div>
-      <p class="text-gray-600">显示您在网易云音乐中收藏的歌曲</p>
+      <button 
+        @click="load"
+        :disabled="loading"
+        class="btn-secondary text-sm py-1.5 px-3"
+      >
+        <RefreshCw :size="16" :class="{ 'animate-spin': loading }" />
+        <span class="hidden sm:inline">刷新</span>
+      </button>
     </div>
 
     <!-- Content -->
-    <div class="flex-1 overflow-y-auto p-6">
+    <div class="flex-1 overflow-y-auto px-4 md:px-6 py-4 md:py-6 pb-24 scrollbar-thin">
       <!-- Loading state -->
-      <div v-if="loading" class="flex items-center justify-center h-64">
-        <div class="text-center">
-          <RefreshCw :size="32" class="animate-spin text-blue-600 mx-auto mb-4" />
-          <div class="text-gray-600">加载中...</div>
+      <div v-if="loading && (!likes || !likes.songs)" class="h-64 flex items-center justify-center">
+        <div class="flex flex-col items-center gap-3">
+          <div class="animate-spin rounded-full h-8 w-8 border-2 border-red-500 border-t-transparent"></div>
+          <div class="text-sm text-gray-500 font-medium">加载收藏中...</div>
         </div>
       </div>
       
       <!-- Error state -->
-      <div v-else-if="error" class="flex items-center justify-center h-64">
-        <div class="text-center max-w-md">
-          <AlertCircle :size="48" class="mx-auto text-red-500 mb-4" />
-          <div class="text-red-800 font-medium mb-2">加载失败</div>
-          <div class="text-red-600 text-sm mb-4">{{ error }}</div>
-          <div v-if="error.includes('Cookie')" class="text-gray-600 text-sm">
-            请前往设置页面配置您的网易云音乐 Cookie
-          </div>
+      <div v-else-if="error" class="bg-red-50 border border-red-200 rounded-xl p-4 text-center max-w-lg mx-auto my-8">
+        <div class="flex items-center justify-center gap-2 text-red-800 font-medium mb-1">
+          <AlertCircle :size="18" />
+          加载失败
+        </div>
+        <div class="text-red-600 text-sm">{{ error }}</div>
+        <div v-if="error.includes('Cookie')" class="mt-3">
+          <RouterLink to="/cookie" class="btn-secondary text-xs bg-white text-red-600 border-red-200 hover:bg-red-50">前往设置页面配置 Cookie</RouterLink>
         </div>
       </div>
       
       <!-- Empty state -->
-      <div v-else-if="likes && (!likes.songs || likes.songs.length === 0)" class="flex items-center justify-center h-64">
-        <div class="text-center">
-          <Heart :size="48" class="mx-auto text-gray-400 mb-4" />
-          <div class="text-gray-600 text-lg mb-2">暂无收藏歌曲</div>
-          <div class="text-gray-500 text-sm">去搜索页面发现更多音乐吧</div>
+      <div v-else-if="likes && (!likes.songs || likes.songs.length === 0)" class="empty-state">
+        <div class="w-20 h-20 bg-red-50 rounded-2xl flex items-center justify-center mb-6 text-red-500 shadow-sm">
+          <Heart :size="40" fill="currentColor" />
         </div>
+        <div class="text-gray-900 text-xl font-bold mb-2">暂无收藏歌曲</div>
+        <div class="text-gray-500">去搜索页面发现更多音乐吧</div>
       </div>
       
       <!-- Likes content -->
-      <div v-else-if="likes?.songs" class="space-y-4">
-        <div class="flex items-center justify-between">
-          <h3 class="text-lg font-medium text-gray-900">收藏的歌曲</h3>
-          <span class="text-sm text-gray-500">共 {{ likes.songs.length }} 首</span>
-        </div>
+      <div v-else-if="likes?.songs" class="max-w-6xl mx-auto space-y-4 fade-in">
         
-        <div class="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
-          <div
-            v-for="song in likes.songs"
-            :key="song.id"
-            class="flex items-center gap-4 p-4 hover:bg-gray-50 transition-colors"
-          >
-            <!-- Album art -->
-            <div class="w-12 h-12 bg-gray-200 rounded-lg flex-shrink-0 overflow-hidden">
-              <img 
-                v-if="song.al?.picUrl" 
-                :src="song.al.picUrl + '?param=100y100'" 
-                :alt="song.name"
-                class="w-full h-full object-cover"
-              />
-              <div v-else class="w-full h-full bg-gradient-to-br from-red-400 to-pink-500"></div>
-            </div>
-            
-            <!-- Song info -->
-            <div class="flex-1 min-w-0">
-              <div class="font-medium text-gray-900 truncate">{{ song.name }}</div>
-              <div class="text-sm text-gray-500 truncate">
-                {{ (song.ar || []).map((a: any) => a.name).join(', ') }}
-              </div>
-              <div v-if="song.al?.name" class="text-xs text-gray-400 truncate">
-                {{ song.al.name }}
-              </div>
-            </div>
-            
-            <!-- Duration -->
-            <div v-if="song.dt" class="flex items-center gap-1 text-sm text-gray-500">
-              <Clock :size="14" />
-              {{ formatDuration(song.dt) }}
-            </div>
-            
-            <!-- Actions -->
-            <div class="flex items-center gap-2">
-              <button
-                @click="addToQueue(song)"
-                class="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors"
-                title="添加到队列"
+        <div class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <table class="w-full text-left border-collapse">
+            <thead class="bg-gray-50/50 text-gray-400 text-xs uppercase font-semibold border-b border-gray-100 hidden md:table-header-group">
+              <tr>
+                <th class="px-3 md:px-6 py-4 font-medium w-16">#</th>
+                <th class="px-3 md:px-6 py-4 font-medium">标题</th>
+                <th class="px-3 md:px-6 py-4 font-medium hidden md:table-cell">歌手</th>
+                <th class="px-3 md:px-6 py-4 font-medium hidden lg:table-cell">专辑</th>
+                <th class="px-3 md:px-6 py-4 font-medium w-24 text-right">时长</th>
+                <th class="px-3 md:px-6 py-4 font-medium w-24"></th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <tr
+                v-for="(song, index) in likes.songs"
+                :key="song.id"
+                class="group hover:bg-red-50/30 transition-colors duration-200"
               >
-                <Plus :size="18" />
-              </button>
-              
-              <button
-                @click="playTrack(song)"
-                class="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-full transition-colors"
-                title="立即播放"
-              >
-                <Play :size="18" />
-              </button>
-              
-              <Heart :size="18" class="text-red-500" fill="currentColor" />
-            </div>
-          </div>
+                <td class="px-3 md:px-6 py-3 md:py-4 text-sm text-gray-400 text-center font-medium group-hover:text-red-600 w-10 md:w-16">
+                  {{ index + 1 }}
+                </td>
+                <td class="px-3 md:px-6 py-3 md:py-4">
+                  <div class="flex items-center gap-3 md:gap-4">
+                    <!-- Thumbnail -->
+                    <div class="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 relative group/cover shadow-sm">
+                      <img 
+                        v-if="song.al?.picUrl" 
+                        :src="song.al.picUrl + '?param=100y100'" 
+                        :alt="song.name"
+                        class="w-full h-full object-cover"
+                      />
+                      <div v-else class="w-full h-full bg-gradient-to-br from-red-400 to-pink-500 flex items-center justify-center">
+                        <Music :size="16" class="text-white/50" />
+                      </div>
+                      <div 
+                        class="absolute inset-0 bg-black/10 opacity-0 group-hover/cover:opacity-100 flex items-center justify-center transition-all cursor-pointer backdrop-blur-[1px]"
+                        @click="playTrack(song)"
+                      >
+                        <Play :size="16" class="text-white drop-shadow-md" fill="currentColor" />
+                      </div>
+                    </div>
+                    
+                    <div class="min-w-0">
+                      <div class="font-semibold text-gray-900 line-clamp-1 text-sm group-hover:text-red-600 transition-colors">{{ song.name }}</div>
+                      <div class="text-xs text-gray-500 md:hidden line-clamp-1 mt-0.5">
+                        {{ (song.ar || []).map((a: any) => a.name).join(', ') }}
+                      </div>
+                    </div>
+                  </div>
+                </td>
+                <td class="px-3 md:px-6 py-3 md:py-4 text-sm text-gray-600 hidden md:table-cell">
+                  <div class="truncate max-w-[150px]">{{ (song.ar || []).map((a: any) => a.name).join(', ') }}</div>
+                </td>
+                <td class="px-3 md:px-6 py-3 md:py-4 text-sm text-gray-500 hidden lg:table-cell">
+                  <div class="truncate max-w-[150px]">{{ song.al?.name }}</div>
+                </td>
+                <td class="px-3 md:px-6 py-3 md:py-4 text-right text-sm text-gray-400 font-mono tabular-nums">
+                  {{ formatDuration(song.dt) }}
+                </td>
+                <td class="px-3 md:px-6 py-3 md:py-4 text-right">
+                  <div class="flex items-center justify-end gap-2 md:opacity-0 group-hover:opacity-100 transition-all duration-200 md:transform md:translate-x-2 group-hover:translate-x-0">
+                    <button
+                      @click="addToQueue(song)"
+                      class="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                      title="添加到队列"
+                    >
+                      <Plus :size="18" />
+                    </button>
+                    
+                    <button
+                      @click="playTrack(song)"
+                      class="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      title="立即播放"
+                    >
+                      <Play :size="18" />
+                    </button>
+                    
+                    <button class="p-2 text-red-500 bg-red-50 rounded-lg cursor-default shadow-sm hidden md:block">
+                      <Heart :size="18" fill="currentColor" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

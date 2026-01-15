@@ -1,6 +1,209 @@
+<template>
+  <div class="h-full flex flex-col bg-gray-50">
+    <!-- Header -->
+    <div class="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4 sticky top-0 z-20 shadow-sm transition-all duration-300">
+      <div class="flex items-center gap-4">
+        <h1 class="text-2xl font-bold text-gray-900 tracking-tight flex items-center gap-2">
+          <Settings :size="28" class="text-blue-600" />
+          系统设置
+        </h1>
+        <span class="text-sm text-gray-500 hidden md:inline-block border-l border-gray-200 pl-4 h-5 leading-5">
+          管理您的网易云音乐登录状态和系统配置
+        </span>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="flex-1 overflow-y-auto px-4 md:px-6 py-4 md:py-6 pb-24 scrollbar-thin">
+      <div class="max-w-4xl mx-auto space-y-6 md:space-y-8 fade-in">
+        <!-- Status Banner -->
+        <div v-if="status" class="status-info animate-fade-in shadow-sm rounded-xl border-blue-100 bg-blue-50/50">
+          <div class="flex-shrink-0">
+            <Info :size="20" />
+          </div>
+          <span class="font-medium text-blue-700">{{ status }}</span>
+        </div>
+
+        <!-- User Login Section -->
+        <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden relative">
+          <div class="absolute top-0 right-0 p-6 opacity-[0.03] pointer-events-none">
+            <User :size="200" class="text-black" />
+          </div>
+          
+          <div class="p-5 md:p-8 relative z-10">
+            <div class="flex items-center justify-between mb-6 md:mb-8">
+              <div>
+                <h2 class="text-xl font-bold text-gray-900 flex items-center gap-3">
+                  用户登录
+                  <span 
+                    :class="[
+                      'text-xs px-2.5 py-1 rounded-full font-semibold border transition-colors',
+                      userCookie 
+                        ? 'bg-green-50 text-green-700 border-green-200' 
+                        : 'bg-gray-100 text-gray-600 border-gray-200'
+                    ]"
+                  >
+                    {{ userCookie ? '已登录' : '未登录' }}
+                  </span>
+                </h2>
+                <p class="text-gray-500 text-sm mt-2">登录以获取您的歌单和收藏列表（Cookie 存储在本地）</p>
+              </div>
+            </div>
+
+            <div class="flex flex-col md:flex-row gap-8">
+              <div class="flex-1 space-y-6">
+                <div class="flex flex-wrap gap-3">
+                  <button @click="startUserQr" class="btn-primary shadow-blue-200">
+                    <QrCode :size="18" />
+                    扫码登录
+                  </button>
+                  <button @click="load" class="btn-secondary">
+                    <RefreshCw :size="18" />
+                    刷新状态
+                  </button>
+                  <button 
+                    v-if="userCookie" 
+                    @click="clearUserCookie" 
+                    class="btn-secondary text-red-600 hover:text-red-700 hover:bg-red-50 hover:border-red-200"
+                  >
+                    <LogOut :size="18" />
+                    退出登录
+                  </button>
+                </div>
+                
+                <div v-if="userCookie" class="p-4 bg-gray-50/50 rounded-xl border border-gray-100 text-sm text-gray-500 break-all font-mono leading-relaxed">
+                  <div class="flex items-center gap-2 mb-2 text-gray-700 font-medium">
+                    <CheckCircle2 :size="14" class="text-green-500" />
+                    Cookie 已保存
+                  </div>
+                  {{ userCookie.substring(0, 50) }}...
+                </div>
+              </div>
+
+              <div 
+                v-if="userQrImg" 
+                class="flex-shrink-0 flex flex-col items-center gap-4 bg-white p-6 rounded-2xl border border-gray-200 shadow-lg shadow-gray-100 animate-scale-in"
+              >
+                <img :src="userQrImg" alt="user qr" class="w-48 h-48 object-contain rounded-lg" />
+                <span class="text-sm text-gray-500 font-medium flex items-center gap-1.5">
+                  <Smartphone :size="16" />
+                  请使用网易云 App 扫码
+                </span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Admin Login Section -->
+        <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden relative">
+          <div class="absolute top-0 right-0 p-6 opacity-[0.03] pointer-events-none">
+            <Shield :size="200" class="text-black" />
+          </div>
+
+          <div class="p-5 md:p-8 relative z-10">
+            <div class="flex items-center justify-between mb-6 md:mb-8">
+              <div>
+                <h2 class="text-xl font-bold text-gray-900 flex items-center gap-3">
+                  后台播放授权
+                  <span 
+                    :class="[
+                      'text-xs px-2.5 py-1 rounded-full font-semibold border transition-colors',
+                      adminStatus 
+                        ? 'bg-green-50 text-green-700 border-green-200' 
+                        : 'bg-gray-100 text-gray-600 border-gray-200'
+                    ]"
+                  >
+                    {{ adminStatus ? '已授权' : '未授权' }}
+                  </span>
+                </h2>
+                <p class="text-gray-500 text-sm mt-2">用于服务器端播放音乐（Cookie 加密存储在服务器，不做返回）</p>
+              </div>
+            </div>
+
+            <div class="space-y-8">
+              <div class="flex flex-col md:flex-row gap-8">
+                <div class="flex-1 space-y-6">
+                  <div class="flex flex-wrap gap-3">
+                    <button @click="startAdminQr" class="btn-primary shadow-blue-200">
+                      <QrCode :size="18" />
+                      扫码授权
+                    </button>
+                    <button @click="load" class="btn-secondary">
+                      <RefreshCw :size="18" />
+                      刷新状态
+                    </button>
+                  </div>
+                  
+                  <div v-if="adminStatus" class="flex items-center gap-2 text-sm text-green-600 font-medium">
+                    <CheckCircle2 :size="16" />
+                    服务器已配置有效 Cookie
+                  </div>
+                </div>
+
+                <div 
+                  v-if="adminQrImg" 
+                  class="flex-shrink-0 flex flex-col items-center gap-4 bg-white p-6 rounded-2xl border border-gray-200 shadow-lg shadow-gray-100 animate-scale-in"
+                >
+                  <img :src="adminQrImg" alt="admin qr" class="w-48 h-48 object-contain rounded-lg" />
+                  <span class="text-sm text-gray-500 font-medium flex items-center gap-1.5">
+                    <Smartphone :size="16" />
+                    请使用网易云 App 扫码
+                  </span>
+                </div>
+              </div>
+
+              <!-- Manual Cookie Input -->
+              <div class="pt-8 border-t border-gray-100">
+                <h3 class="text-sm font-bold text-gray-900 mb-4 flex items-center gap-2">
+                  <Terminal :size="16" class="text-gray-400" />
+                  手动配置
+                </h3>
+                <div class="flex flex-col md:flex-row gap-3">
+                  <input 
+                    v-model="adminManualCookie" 
+                    type="text" 
+                    placeholder="输入 Cookie 字符串 (MUSIC_U=...)" 
+                    class="input-field flex-1 font-mono text-sm"
+                  />
+                  <input 
+                    v-model="adminToken" 
+                    type="password" 
+                    placeholder="Admin Token (可选)" 
+                    class="input-field md:w-48 font-mono text-sm"
+                  />
+                  <button @click="setAdminCookie" class="btn-secondary whitespace-nowrap font-medium">
+                    保存配置
+                  </button>
+                </div>
+                <p class="text-xs text-gray-400 mt-3 flex items-center gap-1.5">
+                  <AlertCircle :size="12" />
+                  如果扫码无法使用，您可以手动输入 Cookie。请确保 Cookie 包含 MUSIC_U 字段。
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</template>
+
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { apiGet, apiPost } from '../api'
+import { 
+  Settings, 
+  Info, 
+  User, 
+  QrCode, 
+  RefreshCw, 
+  LogOut, 
+  CheckCircle2, 
+  Smartphone, 
+  Shield, 
+  Terminal, 
+  AlertCircle 
+} from 'lucide-vue-next'
 
 const USER_COOKIE_KEY = 'tsbot_user_netease_cookie'
 
@@ -170,41 +373,3 @@ async function checkAdminQr() {
 
 onMounted(load)
 </script>
-
-<template>
-  <h2>Netease QR Login</h2>
-
-  <h3>User</h3>
-  <p>Used to fetch your likes/playlists. Cookie is stored in localStorage.</p>
-  <div style="display:flex; gap:8px; align-items:center; flex-wrap: wrap;">
-    <button @click="startUserQr">Start user QR login</button>
-    <button @click="clearUserCookie">Clear user cookie</button>
-    <button @click="load">Reload</button>
-    <span style="opacity:0.7;">logged in: {{ userCookie ? 'yes' : 'no' }}</span>
-  </div>
-  <div v-if="userQrImg" style="margin-top: 10px;">
-    <img :src="userQrImg" alt="user qr" />
-  </div>
-
-  <div style="margin-top: 18px;">
-    <h3>Admin</h3>
-    <p>Used for playback. Cookie is stored encrypted on the server and never returned to the browser.</p>
-    <div style="display:flex; gap:8px; align-items:center; flex-wrap: wrap;">
-      <button @click="startAdminQr">Start admin QR login</button>
-      <button @click="load">Refresh status</button>
-      <span style="opacity:0.7;">admin cookie set: {{ adminStatus ? 'yes' : 'no' }}</span>
-    </div>
-
-    <div style="margin-top: 10px; display:flex; gap:8px; align-items:center; flex-wrap: wrap;">
-      <input v-model="adminManualCookie" placeholder="admin cookie (will be encrypted on server)" style="min-width: 360px;" />
-      <input v-model="adminToken" placeholder="admin token (optional)" style="min-width: 220px;" />
-      <button @click="setAdminCookie">Save admin cookie</button>
-    </div>
-
-    <div v-if="adminQrImg" style="margin-top: 10px;">
-      <img :src="adminQrImg" alt="admin qr" />
-    </div>
-  </div>
-
-  <pre v-if="status" style="white-space:pre-wrap;">{{ status }}</pre>
-</template>

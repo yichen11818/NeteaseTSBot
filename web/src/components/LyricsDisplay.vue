@@ -57,15 +57,32 @@ async function loadLyrics(trackId: number) {
     loading.value = false
   }
 }
-
 // Auto-scroll to current line
 function scrollToCurrentLine() {
   if (currentLineIndex.value >= 0 && lyricsContainer.value && !isUserScrolling.value) {
-    const currentLine = lyricsContainer.value.children[0].children[currentLineIndex.value] as HTMLElement
+    const container = lyricsContainer.value
+    // Access the inner wrapper's children (the lines)
+    const linesWrapper = container.children[0]
+    if (!linesWrapper) return
+    
+    const currentLine = linesWrapper.children[currentLineIndex.value] as HTMLElement
+    
     if (currentLine) {
-      currentLine.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center'
+      // Calculate scroll position manually to avoid affecting parent/window scroll
+      // Use offsetTop if container is positioned, or getBoundingClientRect difference
+      const containerHeight = container.clientHeight
+      const lineHeight = currentLine.offsetHeight
+      // Since the container scrolls, we need the line's position relative to the container content start
+      // offsetTop is usually robust enough if the container is the offsetParent or if structure is simple
+      // But to be safe with getBoundingClientRect:
+      // scrollTop = currentScroll + (lineTop - containerTop) - (halfContainer - halfLine)
+      
+      // We can use offsetTop directly since the line is inside the scrollable container
+      const targetScroll = currentLine.offsetTop - (containerHeight / 2) + (lineHeight / 2)
+      
+      container.scrollTo({
+        top: targetScroll,
+        behavior: 'smooth'
       })
     }
   }
@@ -189,27 +206,27 @@ function getLineStyle(index: number) {
       <!-- Lyrics display -->
       <div 
         v-else 
-        class="h-full overflow-y-auto scrollbar-hide" 
+        class="h-full overflow-y-auto scrollbar-hide relative" 
         ref="lyricsContainer" 
-        :class="theme === 'apple-music' ? 'py-16' : 'py-12'"
+        :class="theme === 'apple-music' ? 'py-8 md:py-16' : 'py-8 md:py-12'"
         @scroll="handleScroll"
         @touchstart="handleTouchStart"
         @touchend="handleTouchEnd"
       >
-        <div :class="theme === 'apple-music' ? 'space-y-8 px-4' : 'space-y-6 px-8'">
+        <div :class="theme === 'apple-music' ? 'space-y-8 md:space-y-12 px-4 md:px-16' : 'space-y-4 md:space-y-6 px-4 md:px-8'">
           <div
             v-for="(line, index) in lyrics"
             :key="index"
             :class="[
-              'transition-all duration-700 ease-out leading-relaxed cursor-pointer',
+              'transition-all duration-700 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] leading-snug cursor-pointer origin-center',
               theme === 'apple-music'
                 ? [
-                    'text-center font-medium tracking-wide',
+                    'text-center font-semibold tracking-wide text-xl md:text-3xl',
                     index === currentLineIndex
-                      ? 'text-white text-4xl lg:text-5xl xl:text-6xl font-bold scale-105 opacity-100 transform translate-y-0'
+                      ? 'text-white opacity-100 transform scale-110 blur-none drop-shadow-[0_0_15px_rgba(255,255,255,0.15)]'
                       : index < currentLineIndex
-                      ? 'text-white/25 text-xl lg:text-2xl opacity-40 transform translate-y-2'
-                      : 'text-white/50 text-xl lg:text-2xl opacity-70 transform translate-y-0'
+                      ? 'text-white/40 opacity-40 transform scale-95 blur-[0.5px]'
+                      : 'text-white/60 opacity-60 transform scale-95 blur-[0.5px]'
                   ]
                 : theme === 'dark'
                 ? [
