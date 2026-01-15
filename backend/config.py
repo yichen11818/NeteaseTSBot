@@ -10,10 +10,17 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    cookie_key: str = "dev-cookie-key"
-
-    netease_api_base: str = "http://47.113.188.213:3000/"
+    host: str = "127.0.0.1"
+    port: int = 8009
     voice_grpc_addr: str = "127.0.0.1:50051"
+    
+    cookie_key: str = "dev-cookie-key"
+    netease_api_base: str = "http://47.113.188.213:3000/"
+    
+    # 日志配置
+    log_level: str = "INFO"
+    log_file: str = "logs/backend.log"
+    
 
     admin_token: str = ""
 

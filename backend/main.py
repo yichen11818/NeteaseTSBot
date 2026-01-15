@@ -18,6 +18,7 @@ from .models import HistoryItem, QueueItem, Secret
 from .netease import NeteaseClient
 from .voice_client import VoiceClient
 from .config import settings
+from .logger import logger
 
 app = FastAPI(title="tsbot-backend")
 
@@ -40,9 +41,14 @@ _play_started_at: float | None = None
 _paused_at: float | None = None
 _paused_total_s: float = 0.0
 _current_duration_ms: int = 0
-_current_artist: str = ""
-_current_album: str = ""
-_current_artwork_url: str = ""
+_current_artist: str | None = None
+_current_album: str | None = None
+_current_artwork_url: str | None = None
+
+_shuffle_enabled: bool = False
+_repeat_mode: str = "none"  # "none", "all", "one"
+_shuffle_queue: list[int] = []
+_current_shuffle_index: int = -1
 
 
 class SearchResponse(BaseModel):
@@ -218,6 +224,12 @@ async def _play_queue_item_internal(item_id: int, *, requested_by: str) -> bool:
                     raise
 
             item.source_url = url
+            item.album = album
+            item.duration = duration_ms
+            item.cover_url = artwork_url
+            if artist:
+                item.artist = artist
+
             session.add(item)
             session.commit()
 
@@ -246,23 +258,82 @@ async def _play_queue_item_internal(item_id: int, *, requested_by: str) -> bool:
 
 
 async def _delete_queue_item(item_id: int) -> None:
+    global _shuffle_queue, _current_shuffle_index
+    
     session = new_session()
     try:
         row = session.get(QueueItem, item_id)
         if row is not None:
             session.delete(row)
             session.commit()
+            
+            # Update shuffle queue if item was in it
+            if _shuffle_enabled and item_id in _shuffle_queue:
+                removed_index = _shuffle_queue.index(item_id)
+                _shuffle_queue.remove(item_id)
+                
+                # Adjust current shuffle index if necessary
+                if removed_index <= _current_shuffle_index:
+                    _current_shuffle_index = max(0, _current_shuffle_index - 1)
     finally:
         session.close()
 
+# Alias for backward compatibility
+_remove_queue_item_internal = _delete_queue_item
+
 
 async def _auto_play_next_from_queue() -> None:
+    global _current_shuffle_index, _shuffle_queue
+    
     session = new_session()
     try:
-        nxt = session.execute(select(QueueItem).order_by(QueueItem.id.asc()).limit(1)).scalars().first()
-        if not nxt:
-            return
-        item_id = int(nxt.id)
+        if _shuffle_enabled and _shuffle_queue:
+            # Play next shuffled track
+            next_index = _current_shuffle_index + 1
+            
+            if next_index >= len(_shuffle_queue):
+                if _repeat_mode == "all":
+                    next_index = 0
+                else:
+                    return  # End of shuffled queue
+            
+            item_id = _shuffle_queue[next_index]
+            _current_shuffle_index = next_index
+        else:
+            # Regular queue order
+            if _current_queue_item_id and _repeat_mode == "one":
+                # Repeat current track
+                item_id = _current_queue_item_id
+            else:
+                # Get next track in regular order
+                if _current_queue_item_id:
+                    nxt = session.execute(
+                        select(QueueItem)
+                        .where(QueueItem.id > _current_queue_item_id)
+                        .order_by(QueueItem.id.asc())
+                        .limit(1)
+                    ).scalars().first()
+                else:
+                    nxt = session.execute(
+                        select(QueueItem)
+                        .order_by(QueueItem.id.asc())
+                        .limit(1)
+                    ).scalars().first()
+                
+                if not nxt:
+                    if _repeat_mode == "all":
+                        # Loop back to beginning
+                        nxt = session.execute(
+                            select(QueueItem)
+                            .order_by(QueueItem.id.asc())
+                            .limit(1)
+                        ).scalars().first()
+                        if not nxt:
+                            return
+                    else:
+                        return  # End of queue
+                
+                item_id = int(nxt.id)
     finally:
         session.close()
 
@@ -334,6 +405,8 @@ async def voice_status() -> dict:
         "current_time": current_time_s,
         "duration": (duration_ms / 1000.0) if duration_ms > 0 else 0.0,
         "volume_percent": st.volume_percent,
+        "is_shuffled": _shuffle_enabled,
+        "repeat_mode": _repeat_mode,
     }
 
 
@@ -383,15 +456,107 @@ async def voice_pause() -> dict:
 
 @app.post("/voice/next")
 async def voice_next() -> dict:
-    await _set_now_playing_queue_item(None)
-    await voice.skip()
-    return {"ok": True}
+    global _current_shuffle_index, _shuffle_queue
+    
+    if _shuffle_enabled and _shuffle_queue:
+        # Handle shuffled next
+        next_index = _current_shuffle_index + 1
+        
+        if next_index >= len(_shuffle_queue):
+            if _repeat_mode == "all":
+                next_index = 0
+            else:
+                await _set_now_playing_queue_item(None)
+                await voice.skip()
+                return {"ok": True, "action": "end_of_queue"}
+        
+        item_id = _shuffle_queue[next_index]
+        _current_shuffle_index = next_index
+        
+        await _play_queue_item_internal(item_id, requested_by="next")
+        return {"ok": True, "action": "play_shuffled_next"}
+    else:
+        # Regular next behavior - just play next without removing current
+        await _set_now_playing_queue_item(None)
+        await voice.skip()
+        await _auto_play_next_from_queue()
+        return {"ok": True, "action": "next"}
+
+
+@app.post("/voice/skip")
+async def voice_skip() -> dict:
+    """Skip current song: remove from queue and play next"""
+    global _current_shuffle_index, _shuffle_queue
+    
+    # Get current playing item to remove it
+    current_item_id = None
+    async with _playback_lock:
+        current_item_id = _current_queue_item_id
+    
+    if current_item_id:
+        # Remove current song from queue
+        await _remove_queue_item_internal(current_item_id)
+        
+        # Stop current playback
+        await _set_now_playing_queue_item(None)
+        await voice.skip()
+        
+        # Auto play next song
+        await _auto_play_next_from_queue()
+        return {"ok": True, "action": "skipped_and_next", "removed_track_id": current_item_id}
+    else:
+        return {"ok": True, "action": "no_current_track", "message": "当前没有正在播放的歌曲"}
 
 
 @app.post("/voice/previous")
 async def voice_previous() -> dict:
-    # Note: Previous track functionality may not be implemented in voice client
-    return {"ok": True, "message": "Previous track not implemented"}
+    global _current_shuffle_index, _shuffle_queue
+    
+    if _shuffle_enabled and _shuffle_queue:
+        # Handle shuffled previous
+        prev_index = _current_shuffle_index - 1
+        
+        if prev_index < 0:
+            if _repeat_mode == "all":
+                prev_index = len(_shuffle_queue) - 1
+            else:
+                return {"ok": True, "message": "Beginning of shuffled queue"}
+        
+        item_id = _shuffle_queue[prev_index]
+        _current_shuffle_index = prev_index
+        
+        await _play_queue_item_internal(item_id, requested_by="previous")
+        return {"ok": True, "action": "play_shuffled_previous"}
+    else:
+        # Handle regular previous
+        session = new_session()
+        try:
+            if _current_queue_item_id:
+                prev = session.execute(
+                    select(QueueItem)
+                    .where(QueueItem.id < _current_queue_item_id)
+                    .order_by(QueueItem.id.desc())
+                    .limit(1)
+                ).scalars().first()
+                
+                if prev:
+                    await _play_queue_item_internal(int(prev.id), requested_by="previous")
+                    return {"ok": True, "action": "play_previous"}
+                elif _repeat_mode == "all":
+                    # Go to last track
+                    last = session.execute(
+                        select(QueueItem)
+                        .order_by(QueueItem.id.desc())
+                        .limit(1)
+                    ).scalars().first()
+                    
+                    if last:
+                        await _play_queue_item_internal(int(last.id), requested_by="previous")
+                        return {"ok": True, "action": "play_last"}
+        finally:
+            session.close()
+        
+        return {"ok": True, "message": "No previous track available"}
 
 
 class SeekRequest(BaseModel):
@@ -411,6 +576,63 @@ class LyricsResponse(BaseModel):
 async def voice_seek(req: SeekRequest) -> dict:
     # Note: Seek functionality may not be implemented in voice client
     return {"ok": True, "message": "Seek not implemented", "time": req.time}
+
+
+class ShuffleRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/voice/shuffle")
+async def voice_shuffle(req: ShuffleRequest) -> dict:
+    global _shuffle_enabled, _shuffle_queue, _current_shuffle_index
+    
+    _shuffle_enabled = req.enabled
+    
+    if _shuffle_enabled:
+        # Generate shuffled queue from current queue
+        session = new_session()
+        try:
+            queue_items = session.execute(select(QueueItem).order_by(QueueItem.id.asc())).scalars().all()
+            queue_ids = [item.id for item in queue_items]
+            
+            # Shuffle the queue IDs using Fisher-Yates algorithm
+            import random
+            _shuffle_queue = queue_ids.copy()
+            for i in range(len(_shuffle_queue) - 1, 0, -1):
+                j = random.randint(0, i)
+                _shuffle_queue[i], _shuffle_queue[j] = _shuffle_queue[j], _shuffle_queue[i]
+            
+            # Find current track position in shuffled queue
+            if _current_queue_item_id:
+                try:
+                    _current_shuffle_index = _shuffle_queue.index(_current_queue_item_id)
+                except ValueError:
+                    _current_shuffle_index = -1
+            else:
+                _current_shuffle_index = -1
+        finally:
+            session.close()
+    else:
+        _shuffle_queue = []
+        _current_shuffle_index = -1
+    
+    return {"ok": True, "enabled": _shuffle_enabled}
+
+
+class RepeatRequest(BaseModel):
+    mode: str  # "none", "all", "one"
+
+
+@app.post("/voice/repeat")
+async def voice_repeat(req: RepeatRequest) -> dict:
+    global _repeat_mode
+    
+    if req.mode in ["none", "all", "one"]:
+        _repeat_mode = req.mode
+    else:
+        _repeat_mode = "none"
+    
+    return {"ok": True, "mode": _repeat_mode}
 
 
 @app.get("/search", response_model=SearchResponse)
@@ -671,56 +893,6 @@ async def song_url(id: str, session: Session = Depends(get_session)) -> dict:
         raise
 
 
-@app.post("/queue/netease")
-async def add_netease_queue(
-    req: AddNeteaseQueueRequest,
-    session: Session = Depends(get_session),
-) -> dict:
-    cookie = _get_admin_cookie(session)
-    notice, duration_ms, artist, album, artwork_url = await _netease_notice_and_duration(req.song_id, cookie)
-    data = await netease.song_url(song_id=req.song_id, cookie=cookie)
-    trial = False
-    try:
-        url = _resolve_netease_song_url(data)
-    except HTTPException as e:
-        if e.status_code == 402:
-            trial_data = await netease.song_url(song_id=req.song_id, cookie=cookie, br=128000)
-            url = _resolve_netease_song_url(trial_data)
-            trial = True
-        else:
-            raise
-
-    item = QueueItem(
-        track_id=f"netease:{req.song_id}",
-        title=req.title,
-        artist=req.artist,
-        source_url=url,
-    )
-    session.add(item)
-    session.commit()
-
-    if req.play_now:
-        await _set_now_playing_queue_item(
-            int(item.id),
-            item.source_url,
-            duration_ms=duration_ms,
-            artist=artist or item.artist,
-            album=album,
-            artwork_url=artwork_url,
-        )
-        await voice.play(source_url=item.source_url, title=item.title, requested_by="web", notice=notice)
-        hist = HistoryItem(
-            track_id=item.track_id,
-            title=item.title,
-            artist=item.artist,
-            source_url=item.source_url,
-            requested_by="web",
-        )
-        session.add(hist)
-        session.commit()
-
-    return {"ok": True, "id": item.id, "source_url": url, "trial": trial}
-
 
 def _get_netease_cookie_from_header(request: Request) -> str:
     c = (request.headers.get("x-netease-cookie") or "").strip()
@@ -825,6 +997,9 @@ async def _enqueue_netease_song(
             track_id=f"netease:{song_id}",
             title=title,
             artist=artist,
+            album=album,
+            duration=duration_ms,
+            cover_url=artwork_url,
             source_url=url,
         )
         session.add(item)
@@ -844,6 +1019,9 @@ async def _enqueue_netease_song(
                 track_id=item.track_id,
                 title=title,
                 artist=artist,
+                album=album,
+                duration=duration_ms,
+                cover_url=artwork_url,
                 source_url=url,
                 requested_by=requested_by,
             )
@@ -926,6 +1104,7 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
         "stop": "stop",
         "停止": "stop",
         "skip": "skip",
+        "next": "skip",
         "跳过": "skip",
         "下一首": "skip",
         "切歌": "skip",
@@ -986,9 +1165,24 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
             return
 
         if cmd == "skip":
-            await _set_now_playing_queue_item(None)
-            await voice.skip()
-            await reply("skipped")
+            # Get current playing item to remove it
+            current_item_id = None
+            async with _playback_lock:
+                current_item_id = _current_queue_item_id
+            
+            if current_item_id:
+                # Remove current song from queue
+                await _remove_queue_item_internal(current_item_id)
+                
+                # Stop current playback
+                await _set_now_playing_queue_item(None)
+                await voice.skip()
+                
+                # Auto play next song
+                await _auto_play_next_from_queue()
+                await reply("已跳过当前歌曲并播放下一首")
+            else:
+                await reply("当前没有正在播放的歌曲")
             return
 
         if cmd in ("vol", "volume"):
@@ -1289,6 +1483,29 @@ async def netease_playlists(request: Request) -> dict:
     return await netease.user_playlist(uid=str(uid), cookie=cookie)
 
 
+class AddQueueNeteaseRequest(BaseModel):
+    song_id: str
+    title: str
+    artist: str
+    play_now: bool = False
+
+
+@app.post("/queue/netease")
+async def add_queue_netease(req: AddQueueNeteaseRequest) -> dict:
+    try:
+        item_id, trial = await _enqueue_netease_song(
+            song_id=req.song_id,
+            title=req.title,
+            artist=req.artist,
+            play_now=req.play_now,
+            requested_by="web",
+        )
+        return {"ok": True, "id": item_id, "trial": trial}
+    except Exception as e:
+        logger.error(f"Failed to enqueue netease song {req.song_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/queue")
 def get_queue(session: Session = Depends(get_session)) -> list[dict]:
     rows = session.execute(select(QueueItem).order_by(QueueItem.id.asc())).scalars().all()
@@ -1298,6 +1515,9 @@ def get_queue(session: Session = Depends(get_session)) -> list[dict]:
             "track_id": r.track_id,
             "title": r.title,
             "artist": r.artist,
+            "album": r.album,
+            "duration": r.duration / 1000.0 if r.duration else None,
+            "artwork": r.cover_url,
             "source_url": r.source_url,
         }
         for r in rows
@@ -1345,6 +1565,9 @@ def history(session: Session = Depends(get_session)) -> list[dict]:
             "track_id": r.track_id,
             "title": r.title,
             "artist": r.artist,
+            "album": r.album,
+            "duration": r.duration / 1000.0 if r.duration else None,
+            "artwork": r.cover_url,
             "source_url": r.source_url,
             "requested_by": r.requested_by,
         }
@@ -1392,5 +1615,118 @@ async def replay_from_history(
                 detail=f"Cannot replay '{hist_item.title}': {e.detail}"
             )
         raise
+
+
+# 网易云音乐扩展功能 API
+
+@app.get("/netease/search/suggest")
+async def netease_search_suggest(keywords: str) -> dict:
+    """搜索建议"""
+    try:
+        result = await netease.search_suggest(keywords)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/search/hot")
+async def netease_search_hot() -> dict:
+    """热搜列表"""
+    try:
+        result = await netease.search_hot()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/search/default")
+async def netease_search_default() -> dict:
+    """默认搜索关键词"""
+    try:
+        result = await netease.search_default()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/playlist/categories")
+async def netease_playlist_categories() -> dict:
+    """歌单分类"""
+    try:
+        result = await netease.playlist_catlist()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/playlist/hot")
+async def netease_playlist_hot_categories() -> dict:
+    """热门歌单分类"""
+    try:
+        result = await netease.playlist_hot()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/playlist/top")
+async def netease_top_playlists(cat: str = "全部", limit: int = 50, offset: int = 0) -> dict:
+    """网友精选歌单"""
+    try:
+        result = await netease.top_playlist(cat=cat, limit=limit, offset=offset)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/playlist/highquality")
+async def netease_highquality_playlists(cat: str = "全部", limit: int = 20) -> dict:
+    """精品歌单"""
+    try:
+        result = await netease.top_playlist_highquality(cat=cat, limit=limit)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/playlist/{playlist_id}/detail")
+async def netease_playlist_detail(playlist_id: str, request: Request) -> dict:
+    """歌单详情"""
+    try:
+        cookie = _get_admin_cookie_or_none(request)
+        result = await netease.playlist_detail(playlist_id, cookie=cookie)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/song/{song_id}/lyric")
+async def netease_song_lyric(song_id: str, request: Request) -> dict:
+    """获取歌词"""
+    try:
+        cookie = _get_admin_cookie_or_none(request)
+        result = await netease.lyric(song_id, cookie=cookie)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/netease/recommend/playlists")
+async def netease_recommend_playlists(request: Request, limit: int = 30) -> dict:
+    """推荐歌单"""
+    try:
+        cookie = _get_admin_cookie_or_none(request)
+        result = await netease.personalized(limit=limit, cookie=cookie)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_admin_cookie_or_none(request: Request) -> str | None:
+    """获取管理员Cookie，如果不存在则返回None"""
+    try:
+        return _get_admin_cookie(request)
+    except HTTPException:
+        return None
 
 
