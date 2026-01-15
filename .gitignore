@@ -103,3 +103,4 @@ backend/_generated/
 
 # Text files (if they contain sensitive data)
 txt
+tsbot.env

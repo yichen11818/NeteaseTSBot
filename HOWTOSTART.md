@@ -82,6 +82,21 @@ make web-build  # 构建前端
 ./run-web.sh
 ```
 
+### 方法一（远程推荐）：使用 nohup 一键启动/停止（不依赖 screen/yum）
+```bash
+# 第一次使用需要赋予执行权限
+chmod +x ./nohup-start.sh ./nohup-stop.sh ./nohup-status.sh
+
+# 停止（按端口兜底清理，避免重复进程）
+./nohup-stop.sh
+
+# 启动（会分别启动 voice/backend/web，并写日志到 logs/）
+./nohup-start.sh
+
+# 查看状态（端口 + 日志路径）
+./nohup-status.sh
+```
+
 ### 方法二：手动启动
 
 #### 1. 启动语音服务
@@ -132,6 +147,14 @@ TSBOT_HOST=127.0.0.1
 TSBOT_PORT=8009
 TSBOT_VOICE_GRPC_ADDR=127.0.0.1:50051
 
+# 前端服务配置
+VITE_DEV_HOST=127.0.0.1
+VITE_DEV_PORT=5173
+
+# 日志配置
+TSBOT_LOG_LEVEL=INFO
+VITE_LOG_LEVEL=INFO
+
 # 数据库配置 (可选)
 DATABASE_URL=sqlite:///./tsbot.db
 
@@ -142,9 +165,9 @@ NETEASE_ADMIN_COOKIE=your_admin_cookie_here
 ## 访问应用
 
 启动成功后，访问：
-- **前端界面**: http://localhost:5173
-- **后端API**: http://localhost:8009
-- **API文档**: http://localhost:8009/docs
+- **前端界面**: http://127.0.0.1:8080 (可通过 VITE_DEV_PORT 环境变量修改端口)
+- **后端API**: http://127.0.0.1:8009 (可通过 TSBOT_PORT 环境变量修改端口)
+- **API文档**: http://127.0.0.1:8009/docs
 
 ## 故障排除
 
