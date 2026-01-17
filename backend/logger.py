@@ -39,8 +39,13 @@ def setup_logger(
     # 避免重复配置
     if logger.handlers:
         return logger
-    
-    logger.setLevel(getattr(logging, level.upper()))
+
+    lvl = (level or "INFO").strip().upper()
+    if lvl == "WARN":
+        lvl = "WARNING"
+    if not hasattr(logging, lvl):
+        lvl = "INFO"
+    logger.setLevel(getattr(logging, lvl))
     
     formatter = TSBotFormatter()
     

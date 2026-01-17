@@ -901,7 +901,28 @@ def _get_netease_cookie_from_header(request: Request) -> str:
     if c.lower().startswith("cookie:"):
         c = c.split(":", 1)[1].strip()
     c = c.replace("\r", "").replace("\n", "")
-    return c
+
+    parts: list[str] = []
+    banned = {"max-age", "expires", "path", "domain", "samesite"}
+    for raw in c.split(";"):
+        s = raw.strip()
+        if not s:
+            continue
+        low = s.lower()
+        if low in ("secure", "httponly"):
+            continue
+        if "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k or not v:
+            continue
+        if k.lower() in banned:
+            continue
+        parts.append(f"{k}={v}")
+
+    return "; ".join(parts) if parts else c
 
 
 def _get_admin_cookie(session: Session) -> str:
@@ -1463,7 +1484,31 @@ async def netease_likelist(request: Request) -> dict:
     uid = profile.get("userId")
     if not uid:
         raise HTTPException(status_code=400, detail="unable to determine uid from cookie")
-    return await netease.likelist(uid=str(uid), cookie=cookie)
+    data = await netease.likelist(uid=str(uid), cookie=cookie)
+    ids = (data or {}).get("ids") or []
+
+    songs: list[dict] = []
+    try:
+        if isinstance(ids, list) and ids:
+            # NeteaseCloudMusicApi supports comma-separated ids in /song/detail.
+            # Avoid overly large payloads; fetch in chunks.
+            chunk_size = 200
+            id_strs = [str(i) for i in ids if i is not None and str(i).strip()]
+            for i in range(0, len(id_strs), chunk_size):
+                chunk = id_strs[i : i + chunk_size]
+                if not chunk:
+                    continue
+                detail = await netease.song_detail(song_id=",".join(chunk), cookie=cookie)
+                dsongs = (detail or {}).get("songs") or []
+                if isinstance(dsongs, list) and dsongs:
+                    songs.extend([s for s in dsongs if isinstance(s, dict)])
+    except Exception:
+        songs = []
+
+    # Keep original fields (ids, code, etc.) and add songs for frontend rendering.
+    out = dict(data or {})
+    out["songs"] = songs
+    return out
 
 
 @app.get("/netease/likes")

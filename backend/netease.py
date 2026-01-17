@@ -60,13 +60,25 @@ class NeteaseClient:
         return await self._get("/login/qr/check", params={"key": key, "timestamp": int(time.time() * 1000)})
 
     async def user_account(self, cookie: str) -> dict[str, Any]:
-        return await self._get("/user/account", cookie=cookie)
+        return await self._get(
+            "/user/account",
+            params={"timestamp": int(time.time() * 1000)},
+            cookie=cookie,
+        )
 
     async def user_playlist(self, uid: str, cookie: str) -> dict[str, Any]:
-        return await self._get("/user/playlist", params={"uid": uid}, cookie=cookie)
+        return await self._get(
+            "/user/playlist",
+            params={"uid": uid, "timestamp": int(time.time() * 1000)},
+            cookie=cookie,
+        )
 
     async def likelist(self, uid: str, cookie: str) -> dict[str, Any]:
-        return await self._get("/likelist", params={"uid": uid}, cookie=cookie)
+        return await self._get(
+            "/likelist",
+            params={"uid": uid, "timestamp": int(time.time() * 1000)},
+            cookie=cookie,
+        )
 
     # 搜索相关功能
     async def search_suggest(self, keywords: str) -> dict[str, Any]:
@@ -184,8 +196,16 @@ class NeteaseClient:
 
     async def login_status(self, cookie: str) -> dict[str, Any]:
         """登录状态"""
-        return await self._get("/login/status", cookie=cookie)
+        return await self._get(
+            "/login/status",
+            params={"timestamp": int(time.time() * 1000)},
+            cookie=cookie,
+        )
 
     async def logout(self, cookie: str) -> dict[str, Any]:
         """退出登录"""
-        return await self._get("/logout", cookie=cookie)
+        return await self._get(
+            "/logout",
+            params={"timestamp": int(time.time() * 1000)},
+            cookie=cookie,
+        )

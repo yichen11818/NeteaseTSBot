@@ -146,7 +146,15 @@ function toggleSidebar() {
             </button>
           </div>
           
-          <div class="flex items-center gap-4"></div>
+          <div class="flex items-center gap-2">
+            <RouterLink
+              to="/cookie"
+              class="p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+              title="设置"
+            >
+              <Settings :size="20" />
+            </RouterLink>
+          </div>
         </header>
         
         <!-- Content area -->
