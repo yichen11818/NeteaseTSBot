@@ -31,11 +31,12 @@ cp tsbot.env.example tsbot.env
 #### 后端依赖 (Python)
 ```bash
 # 创建虚拟环境
+cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 
 # 安装 Python 依赖
-pip install -r backend/requirements.txt
+pip install -r requirements.txt
 ```
 
 #### 前端依赖 (Node.js)

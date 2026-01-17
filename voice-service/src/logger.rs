@@ -41,7 +41,9 @@ where
 pub fn init_logger() {
     use tracing_subscriber::fmt;
     
-    let log_level = std::env::var("TSBOT_LOG_LEVEL").unwrap_or_else(|_| "INFO".to_string());
+    let log_level = std::env::var("TSBOT_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+    let log_level = log_level.trim().to_lowercase();
+    let log_level = if log_level.is_empty() { "info".to_string() } else { log_level };
     
     fmt()
         .event_format(TSBotFormatter)

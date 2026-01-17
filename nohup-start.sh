@@ -39,7 +39,7 @@ start_one() {
 # - backend listens on ${TSBOT_HOST:-127.0.0.1}:${TSBOT_PORT:-8009}
 # - web dev server from Vite config (typically 8080 or 5173)
 
-start_one "voice" 50051 "$ROOT_DIR/logs/voice.log" "./run-voicemake.sh"
+start_one "voice" 50051 "$ROOT_DIR/logs/voice.log" "bash ./run-voicemake.sh"
 
 # backend port from env or default
 BACKEND_PORT="${TSBOT_PORT:-8009}"

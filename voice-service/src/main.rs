@@ -368,8 +368,15 @@ impl VoiceServiceImpl {
 
 fn get_env(key: &str, def: &str) -> String {
     match env::var(key) {
-        Ok(v) if !v.is_empty() => v,
-        _ => def.to_string(),
+        Ok(v) => {
+            let v = v.trim();
+            if !v.is_empty() {
+                v.to_string()
+            } else {
+                def.to_string()
+            }
+        }
+        Err(_) => def.to_string(),
     }
 }
 
@@ -381,6 +388,7 @@ async fn ts3_actor(
 ) -> Result<()> {
     let host = get_env("TSBOT_TS3_HOST", "127.0.0.1");
     let port = get_env("TSBOT_TS3_PORT", "9987");
+    let port = port.trim_start_matches(':').to_string();
     let nickname = get_env("TSBOT_TS3_NICKNAME", "tsbot");
     let server_password = get_env("TSBOT_TS3_SERVER_PASSWORD", "");
     let channel_password = get_env("TSBOT_TS3_CHANNEL_PASSWORD", "");
