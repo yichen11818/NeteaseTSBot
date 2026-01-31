@@ -93,6 +93,7 @@
         <div class="flex-1 overflow-y-auto scrollbar-thin px-2 md:px-6 pb-24 pt-2">
           <VueDraggable
             v-model="tracks"
+            @start="onDragStart"
             @end="onDragEnd"
             class="space-y-1"
             handle=".drag-handle"
@@ -238,6 +239,7 @@ const error = ref('')
 const searchQuery = ref('')
 const selectedTracks = ref<Set<number>>(new Set())
 const currentPlayingId = ref<number | null>(null)
+const isDragging = ref(false)
 let refreshTimer: number | null = null
 
 // Filter tracks based on search
@@ -258,11 +260,41 @@ async function loadTracks() {
   error.value = ''
   
   try {
-    tracks.value = await apiGet<Track[]>('/queue')
+    const next = await apiGet<Track[]>('/queue')
+    applyQueueUpdate(next)
   } catch (e: any) {
     error.value = String(e?.message ?? e)
   } finally {
     loading.value = false
+  }
+}
+
+function applyQueueUpdate(next: Track[]) {
+  const cur = tracks.value
+  if (cur.length === next.length) {
+    let same = true
+    for (let i = 0; i < cur.length; i++) {
+      if (cur[i]?.id !== next[i]?.id) {
+        same = false
+        break
+      }
+    }
+    if (same) {
+      for (let i = 0; i < cur.length; i++) {
+        Object.assign(cur[i], next[i])
+      }
+      return
+    }
+  }
+  tracks.value = next
+}
+
+async function refreshTracksSilently() {
+  try {
+    const next = await apiGet<Track[]>('/queue')
+    applyQueueUpdate(next)
+  } catch {
+    // ignore
   }
 }
 
@@ -321,7 +353,12 @@ async function toggleLike(track: Track) {
 }
 
 // Handle drag end - reorder tracks
+function onDragStart() {
+  isDragging.value = true
+}
+
 function onDragEnd() {
+  isDragging.value = false
   // Update track order on server
   updateTrackOrder()
 }
@@ -364,10 +401,8 @@ function formatDuration(seconds?: number): string {
 onMounted(() => {
     void loadTracks()
     refreshTimer = window.setInterval(() => {
-        // Silent refresh to check current playing status mostly
-        // In a real app we might use websockets or only update status
-        // For now let's just not auto-refresh the whole list to avoid resetting drag state
-        // void loadTracks() 
+        if (isDragging.value) return
+        void refreshTracksSilently()
     }, 5000)
 })
 
