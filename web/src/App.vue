@@ -107,6 +107,15 @@ function toggleSidebar() {
                 <Heart :size="20" />
                 <span>我喜欢的</span>
               </RouterLink>
+
+              <RouterLink 
+                to="/favorites" 
+                class="nav-item"
+                active-class="nav-item-active"
+              >
+                <Heart :size="20" />
+                <span>本地收藏</span>
+              </RouterLink>
               
               <RouterLink 
                 to="/history" 

@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteLocationNormalized } from 'vue-router'
 import SearchView from './views/SearchView.vue'
 import LikesView from './views/LikesView.vue'
+import FavoritesView from './views/FavoritesView.vue'
 import PlaylistsView from './views/PlaylistsView.vue'
 import PlaylistDetailView from './views/PlaylistDetailView.vue'
 import QueueView from './views/QueueView.vue'
@@ -14,6 +15,7 @@ export const router = createRouter({
     { path: '/', redirect: '/search' },
     { path: '/search', component: SearchView },
     { path: '/likes', component: LikesView },
+    { path: '/favorites', component: FavoritesView },
     { path: '/playlists', component: PlaylistsView },
     { path: '/playlist/:id', component: PlaylistDetailView },
     { path: '/queue', component: QueueView },
