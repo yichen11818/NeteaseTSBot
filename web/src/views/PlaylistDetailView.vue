@@ -10,10 +10,12 @@ import {
   User, 
   Music,
   Loader2,
-  Calendar
+  Calendar,
+  Heart
 } from 'lucide-vue-next'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import EmptyState from '../components/EmptyState.vue'
+import { getFavoritePlaylists, getFavoriteSongs, toggleFavoritePlaylist, toggleFavoriteSong } from '../utils/favorites'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,6 +27,40 @@ const status = ref('')
 const playlist = ref<any>(null)
 const tracks = ref<any[]>([])
 
+const isFavPlaylist = ref(false)
+const favSongIds = ref<Set<number>>(new Set())
+
+function refreshFavSongs() {
+  favSongIds.value = new Set(getFavoriteSongs().map((s) => Number(s.id)))
+}
+
+function isFavSong(track: any): boolean {
+  const id = Number(track?.id)
+  if (!Number.isFinite(id) || id <= 0) return false
+  return favSongIds.value.has(id)
+}
+
+function toggleSong(track: any) {
+  toggleFavoriteSong(track)
+  refreshFavSongs()
+}
+
+function refreshFavPlaylist() {
+  isFavPlaylist.value = getFavoritePlaylists().some((p) => Number(p.id) === Number(playlistId))
+}
+
+function togglePlaylist() {
+  if (!playlist.value) return
+  toggleFavoritePlaylist({
+    id: playlist.value.id,
+    name: playlist.value.name,
+    coverImgUrl: playlist.value.coverImgUrl,
+    playCount: playlist.value.playCount,
+    creator: playlist.value.creator,
+  })
+  refreshFavPlaylist()
+}
+
 async function loadPlaylistDetail() {
   loading.value = true
   error.value = ''
@@ -34,6 +70,8 @@ async function loadPlaylistDetail() {
     if (res?.playlist) {
       playlist.value = res.playlist
       tracks.value = res.playlist.tracks || []
+      refreshFavSongs()
+      refreshFavPlaylist()
     } else {
       error.value = '未找到歌单信息'
     }
@@ -84,7 +122,8 @@ async function enqueue(track: any, playNow: boolean = false) {
     }
   } catch (e: any) {
     console.error('Failed to enqueue:', e)
-    error.value = `添加失败: ${e.message}`
+    const msg = String(e?.message ?? e)
+    alert(`点歌失败: ${msg}`)
   }
 }
 
@@ -131,6 +170,16 @@ onMounted(() => {
         class="p-2 bg-white/50 hover:bg-white/80 backdrop-blur-md rounded-full transition-all text-gray-700 shadow-sm"
       >
         <ArrowLeft :size="20" />
+      </button>
+
+      <button
+        v-if="playlist"
+        class="ml-auto p-2 rounded-full backdrop-blur-md shadow-sm transition-colors"
+        :class="isFavPlaylist ? 'bg-pink-50 text-pink-600 hover:bg-pink-100' : 'bg-white/50 text-gray-600 hover:bg-pink-50 hover:text-pink-600'"
+        :title="isFavPlaylist ? '取消本地收藏' : '本地收藏歌单'"
+        @click="togglePlaylist"
+      >
+        <Heart :size="20" :fill="isFavPlaylist ? 'currentColor' : 'none'" />
       </button>
       <h1 class="text-xl font-bold text-gray-900/80 truncate opacity-0 transition-opacity duration-300" :class="{ 'opacity-100': false }">
         <!-- Optional: Show title on scroll -->
@@ -195,6 +244,14 @@ onMounted(() => {
               <button @click="playAll" class="btn-primary px-8 py-3 text-lg shadow-lg shadow-blue-500/30 hover:shadow-blue-500/40 hover:-translate-y-0.5 transition-all w-full md:w-auto flex justify-center">
                 <Play :size="20" fill="currentColor" />
                 播放全部
+              </button>
+              <button
+                @click="togglePlaylist"
+                class="btn-secondary px-6 shadow-sm hover:shadow"
+                :class="isFavPlaylist ? 'bg-pink-50 text-pink-700 border-pink-200' : ''"
+              >
+                <Heart :size="20" :fill="isFavPlaylist ? 'currentColor' : 'none'" />
+                {{ isFavPlaylist ? '已收藏' : '本地收藏' }}
               </button>
               <!-- <button class="btn-secondary px-6 shadow-sm hover:shadow">
                 <Heart :size="20" />
@@ -262,6 +319,14 @@ onMounted(() => {
                       title="添加到队列"
                     >
                       <Plus :size="18" />
+                    </button>
+                    <button
+                      @click="toggleSong(track)"
+                      class="p-2 rounded-lg transition-colors"
+                      :class="isFavSong(track) ? 'text-pink-600 bg-pink-50 hover:bg-pink-100' : 'text-gray-400 hover:text-pink-600 hover:bg-pink-50'"
+                      :title="isFavSong(track) ? '取消本地收藏' : '本地收藏'"
+                    >
+                      <Heart :size="18" :fill="isFavSong(track) ? 'currentColor' : 'none'" />
                     </button>
                   </div>
                 </td>

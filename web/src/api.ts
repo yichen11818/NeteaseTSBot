@@ -7,7 +7,29 @@ async function requestJson<T>(
   const r = await fetch(`${API_BASE}${path}`, init)
   if (!r.ok) {
     const text = await r.text()
-    throw new Error(text)
+    let msg = (text || '').trim()
+    try {
+      const obj = JSON.parse(text)
+      if (obj && typeof obj === 'object') {
+        const anyObj = obj as any
+        const detail = anyObj?.detail
+        const message = anyObj?.message
+        if (typeof detail === 'string' && detail.trim()) {
+          msg = detail.trim()
+        } else if (typeof message === 'string' && message.trim()) {
+          msg = message.trim()
+        }
+      }
+    } catch {
+      // ignore
+    }
+    if (!msg) {
+      msg = `HTTP ${r.status}`
+    }
+    // Some backends/proxies may prefix messages like "503: <detail>".
+    // Normalize to the human message for UI.
+    msg = msg.replace(/^\s*\d{3}:\s*/g, '')
+    throw new Error(msg)
   }
   return (await r.json()) as T
 }

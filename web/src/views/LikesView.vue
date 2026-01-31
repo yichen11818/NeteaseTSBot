@@ -13,21 +13,55 @@ import {
 
 const USER_COOKIE_KEY = 'tsbot_user_netease_cookie'
 
+const PAGE_SIZE = 200
+
 const error = ref('')
 const likes = ref<any>(null)
 const loading = ref(false)
+
+const offset = ref(0)
+const hasMore = ref(false)
 
 async function load() {
   loading.value = true
   error.value = ''
   likes.value = null
+  offset.value = 0
+  hasMore.value = false
   
   try {
     const cookie = localStorage.getItem(USER_COOKIE_KEY) || ''
     if (!cookie) {
       throw new Error('需要先设置网易云音乐 Cookie')
     }
-    likes.value = await apiGet<any>('/netease/likes', { 'X-Netease-Cookie': cookie })
+    const data = await apiGet<any>(`/netease/likes?offset=0&limit=${PAGE_SIZE}`, { 'X-Netease-Cookie': cookie })
+    likes.value = data
+    offset.value = Number(data?.offset ?? 0) + (Number(data?.limit ?? 0) || PAGE_SIZE)
+    hasMore.value = Boolean(data?.has_more)
+  } catch (e: any) {
+    error.value = String(e?.message ?? e)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadMore() {
+  if (loading.value || !hasMore.value) return
+
+  loading.value = true
+  error.value = ''
+  try {
+    const cookie = localStorage.getItem(USER_COOKIE_KEY) || ''
+    if (!cookie) {
+      throw new Error('需要先设置网易云音乐 Cookie')
+    }
+    const data = await apiGet<any>(`/netease/likes?offset=${offset.value}&limit=${PAGE_SIZE}`, { 'X-Netease-Cookie': cookie })
+    const prev = likes.value || {}
+    const prevSongs = Array.isArray(prev?.songs) ? prev.songs : []
+    const nextSongs = Array.isArray(data?.songs) ? data.songs : []
+    likes.value = { ...prev, ...data, songs: [...prevSongs, ...nextSongs] }
+    offset.value = Number(data?.offset ?? offset.value) + (Number(data?.limit ?? 0) || PAGE_SIZE)
+    hasMore.value = Boolean(data?.has_more)
   } catch (e: any) {
     error.value = String(e?.message ?? e)
   } finally {
@@ -45,7 +79,9 @@ async function playTrack(song: any) {
       play_now: true,
     })
   } catch (e: any) {
-    error.value = String(e?.message ?? e)
+    const msg = String(e?.message ?? e)
+    error.value = msg
+    alert(`点歌失败: ${msg}`)
   }
 }
 
@@ -59,7 +95,9 @@ async function addToQueue(song: any) {
       play_now: false,
     })
   } catch (e: any) {
-    error.value = String(e?.message ?? e)
+    const msg = String(e?.message ?? e)
+    error.value = msg
+    alert(`点歌失败: ${msg}`)
   }
 }
 
@@ -148,7 +186,7 @@ onMounted(load)
                 class="group hover:bg-red-50/30 transition-colors duration-200"
               >
                 <td class="px-3 md:px-6 py-3 md:py-4 text-sm text-gray-400 text-center font-medium group-hover:text-red-600 w-10 md:w-16">
-                  {{ index + 1 }}
+                  {{ Number(index) + 1 }}
                 </td>
                 <td class="px-3 md:px-6 py-3 md:py-4">
                   <div class="flex items-center gap-3 md:gap-4">
@@ -214,6 +252,20 @@ onMounted(load)
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <div class="flex items-center justify-center py-6">
+          <button
+            v-if="hasMore"
+            @click="loadMore"
+            :disabled="loading"
+            class="btn-secondary text-sm py-2 px-4"
+          >
+            <span>加载更多</span>
+          </button>
+          <div v-else class="text-xs text-gray-400">
+            已加载全部（{{ likes?.total ?? (likes?.songs?.length ?? 0) }}）
+          </div>
         </div>
       </div>
     </div>

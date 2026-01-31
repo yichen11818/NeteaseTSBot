@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
+import { onBeforeRouteLeave } from 'vue-router'
 import { apiGet, apiPost } from '../api'
+import { getFavoritePlaylists, toggleFavoritePlaylist } from '../utils/favorites'
 import { 
   ListMusic, 
   RefreshCw, 
@@ -27,6 +29,26 @@ const selectedCategory = ref('全部')
 const playlists = ref<any[]>([])
 const highQualityPlaylists = ref<any[]>([])
 const recommendPlaylists = ref<any[]>([])
+
+const scrollEl = ref<HTMLElement | null>(null)
+const STATE_KEY = 'tsbot:state:/playlists'
+
+const favoritePlaylistIds = ref<Set<number>>(new Set())
+
+function refreshFavoritePlaylistIds() {
+  favoritePlaylistIds.value = new Set(getFavoritePlaylists().map((p) => Number(p.id)))
+}
+
+function isLocalFavPlaylist(id: number | string): boolean {
+  const n = Number(id)
+  if (!Number.isFinite(n) || n <= 0) return false
+  return favoritePlaylistIds.value.has(n)
+}
+
+function toggleLocalFavPlaylist(pl: any) {
+  toggleFavoritePlaylist(pl)
+  refreshFavoritePlaylistIds()
+}
 
 async function loadCategories() {
   try {
@@ -64,8 +86,45 @@ async function selectCategory(cat: string) {
 }
 
 function goToPlaylist(id: number | string) {
+  saveState()
   router.push(`/playlist/${id}`)
 }
+
+function saveState() {
+  const el = scrollEl.value
+  if (!el) return
+  sessionStorage.setItem(
+    STATE_KEY,
+    JSON.stringify({
+      category: selectedCategory.value,
+      scrollTop: el.scrollTop || 0,
+    }),
+  )
+}
+
+function loadSavedState(): { category?: string; scrollTop?: number } {
+  try {
+    const raw = sessionStorage.getItem(STATE_KEY)
+    if (!raw) return {}
+    const obj = JSON.parse(raw)
+    return typeof obj === 'object' && obj ? obj : {}
+  } catch {
+    return {}
+  }
+}
+
+async function restoreScroll(top: number) {
+  const el = scrollEl.value
+  if (!el) return
+  if (!Number.isFinite(top) || top <= 0) return
+  await nextTick()
+  el.scrollTop = top
+}
+
+onBeforeRouteLeave(() => {
+  saveState()
+  return true
+})
 
 async function addPlaylistToQueue(playlist: any) {
   error.value = ''
@@ -102,7 +161,9 @@ async function addPlaylistToQueue(playlist: any) {
         })
         addedCount++
       } catch (e) {
+        const msg = String((e as any)?.message ?? e)
         console.error('Failed to add track:', e)
+        alert(`点歌失败: ${msg}`)
       }
     }
     
@@ -125,8 +186,16 @@ function formatPlayCount(count: number): string {
 }
 
 onMounted(() => {
-  loadCategories()
-  loadPlaylists()
+  void (async () => {
+    const saved = loadSavedState()
+    const savedCategory = typeof saved.category === 'string' && saved.category ? saved.category : '全部'
+    selectedCategory.value = savedCategory
+
+    refreshFavoritePlaylistIds()
+    await loadCategories()
+    await loadPlaylists(selectedCategory.value)
+    await restoreScroll(Number(saved.scrollTop ?? 0))
+  })()
 })
 </script>
 
@@ -179,7 +248,7 @@ onMounted(() => {
     </div>
 
     <!-- Content -->
-    <div class="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-6 pb-24 scrollbar-thin">
+    <div ref="scrollEl" class="flex-1 overflow-y-auto px-4 py-4 md:px-6 md:py-6 pb-24 scrollbar-thin">
       <!-- Status messages -->
       <div v-if="error" class="mb-6 bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3 text-red-700">
         <AlertCircle :size="20" class="flex-shrink-0" />
@@ -214,6 +283,14 @@ onMounted(() => {
               @click="goToPlaylist(playlist.id)"
             >
               <div class="relative aspect-square rounded-xl overflow-hidden shadow-sm transition-all duration-300 group-hover:shadow-xl group-hover:-translate-y-1">
+                <button
+                  class="absolute top-2 left-2 z-10 p-1.5 rounded-full backdrop-blur-md transition-colors"
+                  :class="isLocalFavPlaylist(playlist.id) ? 'bg-pink-50 text-pink-600' : 'bg-black/40 text-white/90 hover:bg-pink-50 hover:text-pink-600'"
+                  @click.stop="toggleLocalFavPlaylist({ id: playlist.id, name: playlist.name, coverImgUrl: playlist.coverImgUrl, playCount: playlist.playCount, creator: playlist.creator })"
+                  :title="isLocalFavPlaylist(playlist.id) ? '取消本地收藏' : '本地收藏'"
+                >
+                  <Heart :size="14" :fill="isLocalFavPlaylist(playlist.id) ? 'currentColor' : 'none'" />
+                </button>
                 <img 
                   :src="playlist.coverImgUrl + '?param=300y300'" 
                   :alt="playlist.name"
@@ -263,6 +340,14 @@ onMounted(() => {
               @click="goToPlaylist(playlist.id)"
             >
               <div class="relative aspect-square rounded-xl overflow-hidden shadow-sm transition-all duration-300 group-hover:shadow-xl group-hover:-translate-y-1">
+                <button
+                  class="absolute top-2 left-2 z-10 p-1.5 rounded-full backdrop-blur-md transition-colors"
+                  :class="isLocalFavPlaylist(playlist.id) ? 'bg-pink-50 text-pink-600' : 'bg-black/40 text-white/90 hover:bg-pink-50 hover:text-pink-600'"
+                  @click.stop="toggleLocalFavPlaylist({ id: playlist.id, name: playlist.name, picUrl: playlist.picUrl, playCount: playlist.playCount, creator: playlist.creator })"
+                  :title="isLocalFavPlaylist(playlist.id) ? '取消本地收藏' : '本地收藏'"
+                >
+                  <Heart :size="14" :fill="isLocalFavPlaylist(playlist.id) ? 'currentColor' : 'none'" />
+                </button>
                 <img 
                   :src="playlist.picUrl + '?param=300y300'" 
                   :alt="playlist.name"
@@ -306,6 +391,14 @@ onMounted(() => {
               @click="goToPlaylist(playlist.id)"
             >
               <div class="relative aspect-square rounded-xl overflow-hidden shadow-sm transition-all duration-300 group-hover:shadow-xl group-hover:-translate-y-1">
+                <button
+                  class="absolute top-2 left-2 z-10 p-1.5 rounded-full backdrop-blur-md transition-colors"
+                  :class="isLocalFavPlaylist(playlist.id) ? 'bg-pink-50 text-pink-600' : 'bg-black/40 text-white/90 hover:bg-pink-50 hover:text-pink-600'"
+                  @click.stop="toggleLocalFavPlaylist({ id: playlist.id, name: playlist.name, coverImgUrl: playlist.coverImgUrl, playCount: playlist.playCount, creator: playlist.creator })"
+                  :title="isLocalFavPlaylist(playlist.id) ? '取消本地收藏' : '本地收藏'"
+                >
+                  <Heart :size="14" :fill="isLocalFavPlaylist(playlist.id) ? 'currentColor' : 'none'" />
+                </button>
                 <img 
                   :src="playlist.coverImgUrl + '?param=300y300'" 
                   :alt="playlist.name"
@@ -355,6 +448,7 @@ onMounted(() => {
 <style scoped>
 .line-clamp-2 {
   display: -webkit-box;
+  line-clamp: 2;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;

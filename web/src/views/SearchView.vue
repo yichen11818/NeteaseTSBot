@@ -12,6 +12,7 @@ import {
 } from 'lucide-vue-next'
 import EmptyState from '../components/EmptyState.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
+import { getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 
 const keywords = ref('')
 const error = ref('')
@@ -22,6 +23,23 @@ const suggestions = ref<string[]>([])
 const hotSearches = ref<any[]>([])
 const showSuggestions = ref(false)
 const defaultKeyword = ref('')
+
+const favoriteSongIds = ref<Set<number>>(new Set())
+
+function refreshFavoriteSongIds() {
+  favoriteSongIds.value = new Set(getFavoriteSongs().map((s) => Number(s.id)))
+}
+
+function isLocalFav(song: any): boolean {
+  const id = Number(song?.id)
+  if (!Number.isFinite(id) || id <= 0) return false
+  return favoriteSongIds.value.has(id) || isFavoriteSong(id)
+}
+
+function toggleLocalFav(song: any) {
+  toggleFavoriteSong(song)
+  refreshFavoriteSongIds()
+}
 
 async function search() {
   if (!keywords.value.trim()) return
@@ -108,7 +126,9 @@ async function enqueue(song: any, playNow: boolean) {
       status.value = ''
     }, 3000)
   } catch (e: any) {
-    error.value = String(e?.message ?? e)
+    const msg = String(e?.message ?? e)
+    error.value = msg
+    alert(`点歌失败: ${msg}`)
   }
 }
 
@@ -147,6 +167,7 @@ import { onMounted } from 'vue'
 onMounted(() => {
   loadHotSearches()
   loadDefaultKeyword()
+  refreshFavoriteSongIds()
 })
 </script>
 
@@ -339,10 +360,16 @@ onMounted(() => {
                     </button>
                     
                     <button
-                      class="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                      title="收藏"
+                      @click.stop="toggleLocalFav(song)"
+                      :class="[
+                        'p-2 rounded-lg transition-colors',
+                        isLocalFav(song)
+                          ? 'text-pink-600 bg-pink-50 hover:bg-pink-100'
+                          : 'text-gray-400 hover:text-pink-600 hover:bg-pink-50'
+                      ]"
+                      :title="isLocalFav(song) ? '取消本地收藏' : '本地收藏'"
                     >
-                      <Heart :size="18" />
+                      <Heart :size="18" :fill="isLocalFav(song) ? 'currentColor' : 'none'" />
                     </button>
                   </div>
                 </td>
