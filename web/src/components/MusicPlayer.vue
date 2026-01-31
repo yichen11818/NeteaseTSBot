@@ -131,7 +131,7 @@
         </div>
         
         <!-- Volume and additional controls (Right) -->
-        <div class="flex items-center gap-3 justify-end w-auto sm:w-[30%] min-w-0">
+        <div class="flex items-center gap-3 justify-end w-auto sm:w-[30%] min-w-0 relative">
           <span class="text-xs text-gray-400 font-mono hidden lg:block w-20 text-right">
             {{ formattedCurrentTime }} / {{ formattedDuration }}
           </span>
@@ -167,9 +167,75 @@
             </div>
           </div>
           
-          <button class="p-2 text-gray-500 hover:text-gray-900 transition-colors border-l border-gray-200 pl-4 ml-1 hidden sm:block">
+          <button
+            class="p-2 text-gray-500 hover:text-gray-900 transition-colors border-l border-gray-200 pl-4 ml-1 hidden sm:block"
+            @click="toggleFxPanel"
+          >
             <MoreHorizontal :size="20" />
           </button>
+
+          <div v-if="showFxPanel" class="absolute bottom-full right-4 mb-3 w-80 bg-white border border-gray-200 rounded-xl shadow-xl p-4">
+            <div class="flex items-center justify-between mb-3">
+              <div class="text-sm font-semibold text-gray-900">音效</div>
+              <button class="p-1 text-gray-400 hover:text-gray-700" @click="showFxPanel = false">✕</button>
+            </div>
+
+            <div class="space-y-4">
+              <div>
+                <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+                  <div>声像 (L/R)</div>
+                  <div class="font-mono tabular-nums">{{ fxPan.toFixed(2) }}</div>
+                </div>
+                <input
+                  type="range"
+                  min="-1"
+                  max="1"
+                  step="0.01"
+                  :value="fxPan"
+                  class="w-full"
+                  @input="onFxPanInput(($event.target as HTMLInputElement).valueAsNumber)"
+                />
+              </div>
+
+              <div>
+                <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+                  <div>立体声宽度</div>
+                  <div class="font-mono tabular-nums">{{ fxWidth.toFixed(2) }}</div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="3"
+                  step="0.01"
+                  :value="fxWidth"
+                  class="w-full"
+                  @input="onFxWidthInput(($event.target as HTMLInputElement).valueAsNumber)"
+                />
+              </div>
+
+              <label class="flex items-center justify-between text-sm text-gray-700">
+                <span>左右互换</span>
+                <input type="checkbox" :checked="fxSwapLr" @change="onFxSwapChange(($event.target as HTMLInputElement).checked)" />
+              </label>
+
+              <div class="flex items-center justify-end gap-2">
+                <button
+                  class="px-3 py-1.5 text-sm rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700"
+                  @click="resetFx"
+                  :disabled="fxLoading"
+                >
+                  重置
+                </button>
+                <button
+                  class="px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 text-white"
+                  @click="reloadFx"
+                  :disabled="fxLoading"
+                >
+                  刷新
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -235,6 +301,14 @@ const isLiked = ref(false)
 const queue = ref<Track[]>([])
 const currentTrackIndex = ref(-1)
 const shuffledQueue = ref<number[]>([])
+
+const showFxPanel = ref(false)
+const fxLoading = ref(false)
+const fxPan = ref(0)
+const fxWidth = ref(1)
+const fxSwapLr = ref(false)
+let fxDebounceTimer: number | null = null
+let fxPending: { pan?: number; width?: number; swap_lr?: boolean } = {}
 let timer: number | null = null
 let pollInterval = 1000 // Dynamic polling interval
 let lastUpdateTime = 0
@@ -268,6 +342,79 @@ async function togglePlayPause() {
     error.value = String(e?.message ?? e)
     setTimeout(() => error.value = '', 3000)
   }
+}
+
+function showError(msg: string) {
+  error.value = msg
+  setTimeout(() => error.value = '', 3000)
+}
+
+function toggleFxPanel() {
+  showFxPanel.value = !showFxPanel.value
+  if (showFxPanel.value) {
+    void loadFx()
+  }
+}
+
+async function loadFx() {
+  fxLoading.value = true
+  try {
+    const fx = await apiGet<any>('/voice/fx')
+    fxPan.value = Number(fx?.pan ?? 0)
+    fxWidth.value = Number(fx?.width ?? 1)
+    fxSwapLr.value = Boolean(fx?.swap_lr ?? false)
+  } catch (e: any) {
+    showError(String(e?.message ?? e))
+  } finally {
+    fxLoading.value = false
+  }
+}
+
+async function pushFx(update: { pan?: number; width?: number; swap_lr?: boolean }) {
+  try {
+    await apiPut('/voice/fx', update)
+  } catch (e: any) {
+    showError(String(e?.message ?? e))
+  }
+}
+
+function scheduleFxUpdate(update: { pan?: number; width?: number; swap_lr?: boolean }) {
+  fxPending = { ...fxPending, ...update }
+  if (fxDebounceTimer) {
+    window.clearTimeout(fxDebounceTimer)
+  }
+  fxDebounceTimer = window.setTimeout(() => {
+    const payload = fxPending
+    fxPending = {}
+    fxDebounceTimer = null
+    void pushFx(payload)
+  }, 150)
+}
+
+function onFxPanInput(v: number) {
+  fxPan.value = v
+  scheduleFxUpdate({ pan: v })
+}
+
+function onFxWidthInput(v: number) {
+  fxWidth.value = v
+  scheduleFxUpdate({ width: v })
+}
+
+function onFxSwapChange(v: boolean) {
+  fxSwapLr.value = v
+  scheduleFxUpdate({ swap_lr: v })
+}
+
+async function reloadFx() {
+  await loadFx()
+}
+
+async function resetFx() {
+  fxPan.value = 0
+  fxWidth.value = 1
+  fxSwapLr.value = false
+  await pushFx({ pan: 0, width: 1, swap_lr: false })
 }
 
 async function skipForward() {
@@ -522,6 +669,10 @@ onUnmounted(() => {
   if (timer) {
     clearInterval(timer)
     timer = null
+  }
+  if (fxDebounceTimer) {
+    window.clearTimeout(fxDebounceTimer)
+    fxDebounceTimer = null
   }
 })
 </script>
