@@ -15,8 +15,13 @@ service VoiceService {
 
   rpc SendNotice(NoticeRequest) returns (CommandResponse);
 
+  rpc SetClientDescription(SetClientDescriptionRequest) returns (CommandResponse);
+
   rpc SetVolume(SetVolumeRequest) returns (CommandResponse);
   rpc GetStatus(Empty) returns (StatusResponse);
+
+  rpc SetAudioFx(SetAudioFxRequest) returns (CommandResponse);
+  rpc GetAudioFx(Empty) returns (AudioFxResponse);
 
   rpc SubscribeEvents(SubscribeRequest) returns (stream Event);
 }
@@ -43,6 +48,11 @@ message CommandResponse {
 
 message NoticeRequest {
   string message = 1;
+  int32 target_mode = 2;
+}
+
+message SetClientDescriptionRequest {
+  string description = 1;
 }
 
 message StatusResponse {
@@ -59,6 +69,21 @@ message StatusResponse {
   string now_playing_title = 2;
   string now_playing_source_url = 3;
   int32 volume_percent = 4;
+}
+
+message SetAudioFxRequest {
+  // -1.0 (full left) .. 0.0 (center) .. +1.0 (full right)
+  optional float pan = 1;
+  // 0.0 (mono) .. 1.0 (normal) .. >1.0 (wider)
+  optional float width = 2;
+  // Swap L/R channels.
+  optional bool swap_lr = 3;
+}
+
+message AudioFxResponse {
+  float pan = 1;
+  float width = 2;
+  bool swap_lr = 3;
 }
 
 message SubscribeRequest {
@@ -89,6 +114,8 @@ message ChatEvent {
   string invoker_unique_id = 2;
   string invoker_name = 3;
   string message = 4;
+  string invoker_avatar_hash = 5;
+  string invoker_description = 6;
 }
 
 message PlaybackEvent {

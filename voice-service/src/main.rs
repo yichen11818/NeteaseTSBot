@@ -1,6 +1,7 @@
+use std::collections::VecDeque;
 use std::env;
 use std::fs;
-use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -13,13 +14,14 @@ use tokio::sync::{broadcast, mpsc, watch, Mutex};
 use tokio_stream::wrappers::{BroadcastStream, TcpListenerStream};
 use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod logger;
 
 use tsclientlib::{Connection, DisconnectOptions, Identity, StreamItem};
 use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, OutPacket, PacketType};
 use tsclientlib::{events, MessageTarget};
+use tsclientlib::ChannelId;
 
 pub mod tsbot {
     pub mod voice {
@@ -38,12 +40,48 @@ struct SharedStatus {
     now_playing_title: String,
     now_playing_source_url: String,
     volume_percent: i32,
+    fx_pan: f32,
+    fx_width: f32,
+    fx_swap_lr: bool,
 }
 
 struct PlaybackControl {
     cancel: CancellationToken,
     paused_tx: watch::Sender<bool>,
     handle: tokio::task::JoinHandle<()>,
+}
+
+struct AvatarUploadState {
+    handle: tsclientlib::FiletransferHandle,
+    local_path: PathBuf,
+    md5_hex: String,
+}
+
+fn pick_avatar_file(dir: &Path) -> Option<PathBuf> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let rd = fs::read_dir(dir).ok()?;
+    for e in rd.flatten() {
+        let p = e.path();
+        if !p.is_file() {
+            continue;
+        }
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif" {
+            files.push(p);
+        }
+    }
+    files.sort();
+    files.into_iter().next()
+}
+
+fn md5_hex_of_file(path: &Path) -> Result<String> {
+    let bs = fs::read(path).map_err(|e| anyhow!("read avatar file failed: {e}"))?;
+    let digest = md5::compute(&bs);
+    Ok(format!("{:x}", digest))
 }
 
 struct ChildKillOnDrop {
@@ -73,7 +111,8 @@ struct VoiceServiceImpl {
     status: Arc<Mutex<SharedStatus>>,
     playback: Arc<Mutex<Option<PlaybackControl>>>,
     ts3_audio_tx: mpsc::Sender<OutPacket>,
-    ts3_notice_tx: mpsc::Sender<String>,
+    ts3_notice_tx: mpsc::Sender<(i32, String)>,
+    ts3_cmd_tx: mpsc::Sender<OutCommand>,
     events_tx: broadcast::Sender<voicev1::Event>,
 }
 
@@ -113,24 +152,6 @@ fn emit_playback(
     });
 }
 
-fn emit_chat(
-    events_tx: &broadcast::Sender<voicev1::Event>,
-    target_mode: i32,
-    invoker_uid: impl Into<String>,
-    invoker_name: impl Into<String>,
-    msg: impl Into<String>,
-) {
-    let _ = events_tx.send(voicev1::Event {
-        unix_ms: now_unix_ms(),
-        payload: Some(voicev1::event::Payload::Chat(voicev1::ChatEvent {
-            target_mode,
-            invoker_unique_id: invoker_uid.into(),
-            invoker_name: invoker_name.into(),
-            message: msg.into(),
-        })),
-    });
-}
-
 #[tonic::async_trait]
 impl VoiceService for VoiceServiceImpl {
     async fn ping(
@@ -149,7 +170,7 @@ impl VoiceService for VoiceServiceImpl {
         let r = req.into_inner();
 
         if !r.notice.is_empty() {
-            let _ = self.ts3_notice_tx.try_send(r.notice.clone());
+            let _ = self.ts3_notice_tx.try_send((2, r.notice.clone()));
         }
 
         {
@@ -226,6 +247,34 @@ impl VoiceService for VoiceServiceImpl {
         }))
     }
 
+    async fn set_client_description(
+        &self,
+        req: Request<voicev1::SetClientDescriptionRequest>,
+    ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
+        let r = req.into_inner();
+        let desc = r.description;
+        if desc.len() > 700 {
+            return Ok(Response::new(voicev1::CommandResponse {
+                ok: false,
+                message: "description too long".to_string(),
+            }));
+        }
+
+        // Send a raw TS3 command: clientupdate client_description=...
+        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientupdate");
+        cmd.write_arg("client_description", &desc);
+
+        self.ts3_cmd_tx
+            .send(cmd)
+            .await
+            .map_err(|e| Status::internal(format!("send failed: {e}")))?;
+
+        Ok(Response::new(voicev1::CommandResponse {
+            ok: true,
+            message: "ok".to_string(),
+        }))
+    }
+
     async fn resume(
         &self,
         _req: Request<voicev1::Empty>,
@@ -285,7 +334,8 @@ impl VoiceService for VoiceServiceImpl {
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
         let r = req.into_inner();
         if !r.message.is_empty() {
-            let _ = self.ts3_notice_tx.try_send(r.message);
+            let mode = if r.target_mode == 3 { 3 } else { 2 };
+            let _ = self.ts3_notice_tx.try_send((mode, r.message));
         }
         Ok(Response::new(voicev1::CommandResponse {
             ok: true,
@@ -317,6 +367,41 @@ impl VoiceService for VoiceServiceImpl {
             now_playing_title: st.now_playing_title.clone(),
             now_playing_source_url: st.now_playing_source_url.clone(),
             volume_percent: st.volume_percent,
+        }))
+    }
+
+    async fn set_audio_fx(
+        &self,
+        req: Request<voicev1::SetAudioFxRequest>,
+    ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
+        let r = req.into_inner();
+        let mut st = self.status.lock().await;
+
+        if let Some(p) = r.pan {
+            st.fx_pan = p.clamp(-1.0, 1.0);
+        }
+        if let Some(w) = r.width {
+            st.fx_width = w.clamp(0.0, 3.0);
+        }
+        if let Some(s) = r.swap_lr {
+            st.fx_swap_lr = s;
+        }
+
+        Ok(Response::new(voicev1::CommandResponse {
+            ok: true,
+            message: "ok".to_string(),
+        }))
+    }
+
+    async fn get_audio_fx(
+        &self,
+        _req: Request<voicev1::Empty>,
+    ) -> std::result::Result<Response<voicev1::AudioFxResponse>, Status> {
+        let st = self.status.lock().await;
+        Ok(Response::new(voicev1::AudioFxResponse {
+            pan: st.fx_pan,
+            width: st.fx_width,
+            swap_lr: st.fx_swap_lr,
         }))
     }
 
@@ -380,9 +465,33 @@ fn get_env(key: &str, def: &str) -> String {
     }
 }
 
+fn resolve_repo_relative(path: &str) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+
+    let rel = PathBuf::from(path);
+    let mut cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut last;
+    loop {
+        last = cwd.clone();
+        if cwd.join(".git").exists() {
+            return cwd.join(&rel);
+        }
+
+        if !cwd.pop() {
+            break;
+        }
+    }
+
+    last.join(rel)
+}
+
 async fn ts3_actor(
     mut audio_rx: mpsc::Receiver<OutPacket>,
-    mut notice_rx: mpsc::Receiver<String>,
+    mut notice_rx: mpsc::Receiver<(i32, String)>,
+    mut cmd_rx: mpsc::Receiver<OutCommand>,
     events_tx: broadcast::Sender<voicev1::Event>,
     shutdown_token: CancellationToken,
 ) -> Result<()> {
@@ -395,7 +504,14 @@ async fn ts3_actor(
     let channel_path = get_env("TSBOT_TS3_CHANNEL_PATH", "");
     let channel_id = get_env("TSBOT_TS3_CHANNEL_ID", "");
     let identity_str = get_env("TSBOT_TS3_IDENTITY", "");
-    let identity_file = get_env("TSBOT_TS3_IDENTITY_FILE", "./logs/identity.txt");
+    let identity_file = resolve_repo_relative(&get_env("TSBOT_TS3_IDENTITY_FILE", "./logs/identity.json"));
+    let avatar_dir = get_env("TSBOT_TS3_AVATAR_DIR", "");
+    let avatar_dir = avatar_dir.trim();
+    let avatar_dir = if avatar_dir.is_empty() {
+        None
+    } else {
+        Some(resolve_repo_relative(avatar_dir))
+    };
 
     let address = format!("{}:{}", host, port);
 
@@ -442,7 +558,7 @@ async fn ts3_actor(
         }
 
         if ident.is_none() {
-            if let Some(parent) = std::path::Path::new(&identity_file).parent() {
+            if let Some(parent) = identity_file.parent() {
                 let _ = fs::create_dir_all(parent);
             }
             let id = Identity::create();
@@ -455,130 +571,387 @@ async fn ts3_actor(
         }
     }
 
-    let mut con = opts.connect().map_err(|e| anyhow!("connect failed: {e}"))?;
-    let mut logged_connected = false;
-    let mut last_muted_warn = Instant::now() - Duration::from_secs(60);
-
     let mut out_buf: VecDeque<OutPacket> = VecDeque::with_capacity(400);
+    let mut avatar_set_done = false;
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(60);
 
-    // Process events periodically without holding a long-lived mutable borrow of `con`.
-    let mut event_tick = tokio::time::interval(std::time::Duration::from_millis(50));
-    let mut send_tick = tokio::time::interval(std::time::Duration::from_millis(20));
-    loop {
-        tokio::select! {
-            _ = shutdown_token.cancelled() => {
-                info!("TS3 actor received shutdown signal");
-                // Disconnect gracefully
-                let _ = con.disconnect(DisconnectOptions::new());
-                break;
-            }
-            _ = event_tick.tick() => {
-                // Drain any events that are immediately ready.
-                let mut events = con.events();
-                loop {
-                    match events.next().now_or_never() {
-                        Some(Some(Ok(StreamItem::BookEvents(evts)))) => {
-                            if !logged_connected {
-                                info!("ts3 connected");
-                                logged_connected = true;
-                                // LogEvent.Level: INFO=2
-                                emit_log(&events_tx, 2, "ts3 connected");
-                            }
-                            for e in evts {
-                                if let events::Event::Message { target, invoker, message } = e {
-                                    let mode = match target {
-                                        // ChatEvent.TargetMode: PRIVATE=1, CHANNEL=2, SERVER=3
-                                        MessageTarget::Client(_) | MessageTarget::Poke(_) => 1,
-                                        MessageTarget::Channel => 2,
-                                        MessageTarget::Server => 3,
-                                    };
-                                    let uid = invoker
-                                        .uid
-                                        .as_ref()
-                                        .map(|u| u.as_ref().to_string())
-                                        .unwrap_or_default();
-                                    emit_chat(&events_tx, mode, uid, invoker.name, message);
-                                }
-                            }
-                        }
-                        Some(Some(Ok(StreamItem::AudioChange(a)))) => {
-                            if let tsclientlib::AudioEvent::CanSendAudio(can) = a {
-                                emit_log(
-                                    &events_tx,
-                                    // LogEvent.Level: INFO=2, WARN=3
-                                    if can { 2 } else { 3 },
-                                    format!("can_send_audio={}", can),
-                                );
-                            }
-                        }
-                        Some(Some(Ok(_))) => {}
-                        Some(Some(Err(e))) => {
-                            // LogEvent.Level: ERROR=4
-                            emit_log(&events_tx, 4, format!("ts3 error: {e}"));
-                            return Err(anyhow!("ts3 event error: {e}"));
-                        }
-                        Some(None) => {
-                            // LogEvent.Level: ERROR=4
-                            emit_log(&events_tx, 4, "ts3 disconnected");
-                            return Err(anyhow!("ts3 disconnected"));
-                        }
-                        None => break,
-                    }
+    'outer: loop {
+        if shutdown_token.is_cancelled() {
+            break;
+        }
+
+        let mut connect_handle = tokio::task::spawn_blocking({
+            let o = opts.clone();
+            move || -> anyhow::Result<Connection> { Ok(o.connect()?) }
+        });
+
+        let mut con = match tokio::select! {
+            res = &mut connect_handle => {
+                match res {
+                    Ok(r) => r,
+                    Err(e) => Err(anyhow!("ts3 connect join failed: {e}")),
                 }
             }
+            _ = shutdown_token.cancelled() => {
+                connect_handle.abort();
+                break 'outer;
+            }
+        } {
+            Ok(c) => {
+                backoff = Duration::from_secs(1);
+                out_buf.clear();
+                c
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                emit_log(&events_tx, 3, format!("ts3 connect failed: {msg}"));
+                let wait = if msg.contains("ClientTooManyClonesConnected") {
+                    std::cmp::max(backoff, Duration::from_secs(30))
+                } else {
+                    backoff
+                };
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = shutdown_token.cancelled() => { break 'outer; }
+                }
+                backoff = std::cmp::min(backoff.saturating_mul(2), max_backoff);
+                continue;
+            }
+        };
 
-            _ = send_tick.tick() => {
-                if let Some(pkt) = out_buf.pop_front() {
-                    if !con.can_send_audio() {
-                        if last_muted_warn.elapsed() >= Duration::from_secs(3) {
-                            last_muted_warn = Instant::now();
+        let mut logged_connected = false;
+        let mut last_muted_warn = Instant::now() - Duration::from_secs(60);
+        let mut avatar_upload: Option<AvatarUploadState> = None;
+        let mut conn_err: Option<String> = None;
+
+        let mut send_last_tick = Instant::now();
+        let mut send_jitter_max_ms: u128 = 0;
+        let mut out_buf_max: usize = 0;
+        let mut out_buf_drops: u64 = 0;
+        let mut send_audio_errs: u64 = 0;
+        let mut diag_next = Instant::now() + Duration::from_secs(5);
+
+        let mut event_tick = tokio::time::interval(std::time::Duration::from_millis(50));
+        let mut send_tick = tokio::time::interval(std::time::Duration::from_millis(20));
+
+        'inner: loop {
+            tokio::select! {
+                _ = shutdown_token.cancelled() => {
+                    if let Err(e) = con.disconnect(DisconnectOptions::new()) {
+                        emit_log(&events_tx, 3, format!("ts3 disconnect failed: {e}"));
+                    }
+                    let drain = async {
+                        con.events()
+                            .for_each(|_| futures::future::ready(()))
+                            .await;
+                    };
+                    let _ = tokio::time::timeout(Duration::from_secs(2), drain).await;
+                    conn_err = None;
+                    break 'inner;
+                }
+
+                _ = event_tick.tick() => {
+                    loop {
+                        let next_item = {
+                            let mut evs = con.events();
+                            evs.next().now_or_never()
+                        };
+
+                        match next_item {
+                            Some(Some(Ok(StreamItem::BookEvents(evts)))) => {
+                                if !logged_connected {
+                                    logged_connected = true;
+                                    emit_log(&events_tx, 2, "ts3 connected");
+
+                                    if !avatar_set_done {
+                                        if let Some(dir) = avatar_dir.as_ref() {
+                                            if dir.is_dir() {
+                                                if let Some(p) = pick_avatar_file(dir) {
+                                                    match fs::metadata(&p) {
+                                                        Ok(md) => {
+                                                            let size = md.len();
+                                                            match md5_hex_of_file(&p) {
+                                                                Ok(md5_hex) => {
+                                                                    let remote_path = format!("/avatar_{}", md5_hex);
+                                                                    match con.upload_file(ChannelId(0), &remote_path, None, size, true, false) {
+                                                                        Ok(h) => {
+                                                                            avatar_upload = Some(AvatarUploadState { handle: h, local_path: p.clone(), md5_hex: md5_hex.clone() });
+                                                                            emit_log(&events_tx, 2, format!("avatar upload started: {} -> {}", p.display(), remote_path));
+                                                                        }
+                                                                        Err(e) => {
+                                                                            emit_log(&events_tx, 3, format!("avatar upload start failed: {e}"));
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => {
+                                                                    emit_log(&events_tx, 3, format!("avatar md5 failed: {e}"));
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            emit_log(&events_tx, 3, format!("avatar stat failed: {e}"));
+                                                        }
+                                                    }
+                                                } else {
+                                                    emit_log(&events_tx, 3, format!("avatar dir has no supported images: {}", dir.display()));
+                                                }
+                                            } else {
+                                                emit_log(&events_tx, 3, format!("avatar dir not found: {}", dir.display()));
+                                            }
+                                        }
+                                    }
+                                }
+
+                                for e in evts {
+                                    if let events::Event::Message { target, invoker, message } = e {
+                                        let mode = match target {
+                                            MessageTarget::Client(_) | MessageTarget::Poke(_) => 1,
+                                            MessageTarget::Channel => 2,
+                                            MessageTarget::Server => 3,
+                                        };
+
+                                        let uid = invoker
+                                            .uid
+                                            .as_ref()
+                                            .map(|u| u.as_ref().to_string())
+                                            .unwrap_or_default();
+
+                                        let mut avatar_hash = String::new();
+                                        let mut description = String::new();
+                                        if !uid.is_empty() {
+                                            if let Ok(st) = con.get_state() {
+                                                for c in st.clients.values() {
+                                                    if let Some(cuid) = c.uid.as_ref() {
+                                                        if cuid.to_string() == uid {
+                                                            avatar_hash = c.avatar_hash.clone();
+                                                            description = c.description.clone();
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        let _ = events_tx.send(voicev1::Event {
+                                            unix_ms: now_unix_ms(),
+                                            payload: Some(voicev1::event::Payload::Chat(voicev1::ChatEvent {
+                                                target_mode: mode,
+                                                invoker_unique_id: uid,
+                                                invoker_name: invoker.name,
+                                                message,
+                                                invoker_avatar_hash: avatar_hash,
+                                                invoker_description: description,
+                                            })),
+                                        });
+                                    }
+                                }
+                            }
+
+                            Some(Some(Ok(StreamItem::FileUpload(h, r)))) => {
+                                if let Some(st) = avatar_upload.as_ref() {
+                                    if st.handle.0 == h.0 {
+                                        let local_path = st.local_path.clone();
+                                        let md5_hex = st.md5_hex.clone();
+
+                                        match tokio::fs::File::open(&local_path).await {
+                                            Ok(mut file) => {
+                                                let mut stream = r.stream;
+                                                if let Err(e) = tokio::io::copy(&mut file, &mut stream).await {
+                                                    emit_log(&events_tx, 3, format!("upload avatar failed: {e}"));
+                                                    avatar_upload = None;
+                                                    continue;
+                                                }
+
+                                                let mut cmd = OutCommand::new(
+                                                    Direction::C2S,
+                                                    Flags::empty(),
+                                                    PacketType::Command,
+                                                    "clientupdate",
+                                                );
+                                                cmd.write_arg("client_flag_avatar", &md5_hex);
+                                                if let Ok(client) = con.get_tsproto_client_mut() {
+                                                    if let Err(e) = client.send_packet(cmd.into_packet()) {
+                                                        emit_log(&events_tx, 3, format!("set avatar flag failed: {e}"));
+                                                        avatar_upload = None;
+                                                        continue;
+                                                    }
+                                                }
+
+                                                emit_log(&events_tx, 2, format!("avatar updated: {}", md5_hex));
+                                                avatar_set_done = true;
+                                                avatar_upload = None;
+                                            }
+                                            Err(e) => {
+                                                emit_log(&events_tx, 3, format!("open avatar file failed: {e}"));
+                                                avatar_upload = None;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Some(Some(Ok(StreamItem::FiletransferFailed(h, e)))) => {
+                                if let Some(st) = avatar_upload.as_ref() {
+                                    if st.handle.0 == h.0 {
+                                        emit_log(&events_tx, 3, format!("avatar filetransfer failed: {e}"));
+                                        avatar_upload = None;
+                                    }
+                                }
+                            }
+
+                            Some(Some(Ok(_))) => {}
+
+                            Some(Some(Err(e))) => {
+                                emit_log(&events_tx, 4, format!("ts3 error: {e}"));
+                                conn_err = Some(format!("ts3 event error: {e}"));
+                                break;
+                            }
+                            Some(None) => {
+                                emit_log(&events_tx, 4, "ts3 disconnected");
+                                conn_err = Some("ts3 disconnected".to_string());
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+
+                    if conn_err.is_some() {
+                        break 'inner;
+                    }
+                }
+
+                _ = send_tick.tick() => {
+                    let now = Instant::now();
+                    let dt = now.duration_since(send_last_tick);
+                    send_last_tick = now;
+                    let dt_ms = dt.as_millis();
+                    if dt_ms > send_jitter_max_ms {
+                        send_jitter_max_ms = dt_ms;
+                    }
+                    if out_buf.len() > out_buf_max {
+                        out_buf_max = out_buf.len();
+                    }
+
+                    if let Some(pkt) = out_buf.pop_front() {
+                        if !con.can_send_audio() {
+                            if last_muted_warn.elapsed() >= Duration::from_secs(3) {
+                                last_muted_warn = Instant::now();
+                                emit_log(
+                                    &events_tx,
+                                    3,
+                                    "cannot send audio (muted / insufficient talk power / away / input muted)".to_string(),
+                                );
+                            }
+                        } else if let Err(e) = con.send_audio(pkt) {
+                            send_audio_errs += 1;
                             emit_log(
                                 &events_tx,
                                 3,
-                                "cannot send audio (muted / insufficient talk power / away / input muted)".to_string(),
+                                format!("send_audio failed (errs={}): {e}", send_audio_errs),
                             );
+                            conn_err = Some(format!("send_audio failed: {e}"));
+                            break 'inner;
+                        }
+                    }
+
+                    if now >= diag_next {
+                        diag_next = now + Duration::from_secs(5);
+                        let msg = format!(
+                            "audio_send_diag: out_buf_max={} drops={} send_jitter_max_ms={} send_audio_errs={}",
+                            out_buf_max, out_buf_drops, send_jitter_max_ms, send_audio_errs
+                        );
+                        emit_log(&events_tx, 2, msg.clone());
+                        info!("{msg}");
+                        out_buf_max = out_buf.len();
+                        send_jitter_max_ms = 0;
+                        send_audio_errs = 0;
+                    }
+                }
+
+                msg = notice_rx.recv() => {
+                    if let Some((mode, text)) = msg {
+                        let target_mode = if mode == 3 { 3 } else { 2 };
+                        let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "sendtextmessage");
+                        cmd.write_arg("targetmode", &target_mode);
+                        cmd.write_arg("msg", &text);
+                        if let Ok(client) = con.get_tsproto_client_mut() {
+                            if let Err(e) = client.send_packet(cmd.into_packet()) {
+                                conn_err = Some(format!("sendtextmessage failed: {e}"));
+                                break 'inner;
+                            }
                         }
                     } else {
-                        con.send_audio(pkt).map_err(|e| anyhow!("send_audio failed: {e}"))?;
+                        break 'outer;
                     }
                 }
-            }
 
-            msg = notice_rx.recv() => {
-                if let Some(text) = msg {
-                    // Send a channel chat message (targetmode=2). This uses the raw TS3 command.
-                    let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "sendtextmessage");
-                    cmd.write_arg("targetmode", &2);
-                    cmd.write_arg("msg", &text);
-
-                    if let Ok(client) = con.get_tsproto_client_mut() {
-                        client
-                            .send_packet(cmd.into_packet())
-                            .map_err(|e| anyhow!("sendtextmessage failed: {e}"))?;
+                cmd = cmd_rx.recv() => {
+                    if let Some(c) = cmd {
+                        if let Ok(client) = con.get_tsproto_client_mut() {
+                            if let Err(e) = client.send_packet(c.into_packet()) {
+                                conn_err = Some(format!("send_packet failed: {e}"));
+                                break 'inner;
+                            }
+                        }
+                    } else {
+                        break 'outer;
                     }
-                } else {
-                    break;
                 }
-            }
 
-            pkt = audio_rx.recv() => {
-                if let Some(p) = pkt {
-                    // Keep a bounded buffer to avoid unbounded growth if TS3 cannot accept audio.
-                    if out_buf.len() >= 800 {
-                        out_buf.pop_front();
+                pkt = audio_rx.recv() => {
+                    if let Some(p) = pkt {
+                        if out_buf.len() >= 800 {
+                            out_buf.pop_front();
+                            out_buf_drops += 1;
+                        }
+                        out_buf.push_back(p);
+                    } else {
+                        break 'outer;
                     }
-                    out_buf.push_back(p);
-                } else {
-                    break;
                 }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                break;
             }
         }
+
+        if send_audio_errs > 0 {
+            emit_log(
+                &events_tx,
+                3,
+                format!("audio_send_errs_total: {}", send_audio_errs),
+            );
+        }
+
+        if let Err(e) = con.disconnect(DisconnectOptions::new()) {
+            emit_log(&events_tx, 3, format!("ts3 disconnect failed: {e}"));
+        }
+
+        let drain = async {
+            con.events().for_each(|_| futures::future::ready(())).await;
+        };
+        let _ = tokio::time::timeout(Duration::from_millis(500), drain).await;
+
+        if shutdown_token.is_cancelled() {
+            break;
+        }
+
+        let mut wait = backoff;
+        if let Some(msg) = conn_err {
+            if msg.contains("ClientTooManyClonesConnected") {
+                wait = std::cmp::max(wait, Duration::from_secs(30));
+            }
+            emit_log(&events_tx, 3, format!("ts3 connection lost: {msg}; retry in {:?}", wait));
+        } else {
+            emit_log(&events_tx, 3, format!("ts3 disconnected; retry in {:?}", wait));
+        }
+
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = shutdown_token.cancelled() => { break; }
+        }
+
+        backoff = std::cmp::min(backoff.saturating_mul(2), max_backoff);
     }
 
-    con.disconnect(DisconnectOptions::new()).ok();
     Ok(())
 }
 
@@ -660,14 +1033,20 @@ async fn playback_loop(
     // Reader task: continuously read PCM frames from ffmpeg.
     // On EOF or error, it will stop sending and close the channel.
     let reader_cancel = cancel.clone();
+    let reader_src = source_url.clone();
     tokio::spawn(async move {
         let mut buf = vec![0u8; frame_bytes];
         loop {
             if reader_cancel.is_cancelled() {
                 break;
             }
+            let t0 = Instant::now();
             if stdout.read_exact(&mut buf).await.is_err() {
                 break;
+            }
+            let dt = t0.elapsed();
+            if dt >= Duration::from_millis(200) {
+                warn!(source_url = %reader_src, read_ms = %dt.as_millis(), "ffmpeg pcm read stalled");
             }
             if pcm_tx.send(buf.clone()).await.is_err() {
                 break;
@@ -677,8 +1056,39 @@ async fn playback_loop(
 
     let mut ticker = tokio::time::interval(frame_duration);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut underruns: u64 = 0;
+    let mut underruns_total: u64 = 0;
+    let mut underruns_window: u64 = 0;
+    let mut underruns_consecutive: u64 = 0;
     let mut logged_first_pcm = false;
+
+    let mut pcm_buf: VecDeque<Vec<u8>> = VecDeque::new();
+
+    if let Ok(Some(frame)) = tokio::time::timeout(Duration::from_secs(5), pcm_rx.recv()).await {
+        if frame.len() == frame_bytes {
+            pcm_buf.push_back(frame);
+            logged_first_pcm = true;
+            info!(source_url = %source_url, first_pcm_ms = %playback_started.elapsed().as_millis(), "first pcm frame received");
+        }
+    } else {
+        return Err(anyhow!("no pcm received from ffmpeg"));
+    }
+
+    while pcm_buf.len() < 5 {
+        match tokio::time::timeout(Duration::from_millis(50), pcm_rx.recv()).await {
+            Ok(Some(frame)) => {
+                if frame.len() == frame_bytes {
+                    pcm_buf.push_back(frame);
+                }
+            }
+            _ => break,
+        }
+    }
+
+    let mut last_tick = Instant::now();
+    let mut tick_jitter_max_ms: u128 = 0;
+    let mut clipped_samples: u64 = 0;
+    let mut max_abs_sample: f32 = 0.0;
+    let mut diag_next = Instant::now() + Duration::from_secs(5);
 
     'main: loop {
         if cancel.is_cancelled() {
@@ -701,49 +1111,141 @@ async fn playback_loop(
             _ = ticker.tick() => {}
         }
 
+        let now = Instant::now();
+        let dt = now.duration_since(last_tick);
+        last_tick = now;
+        let dt_ms = dt.as_millis();
+        if dt_ms > tick_jitter_max_ms {
+            tick_jitter_max_ms = dt_ms;
+        }
+
         // Prefer real PCM frame; fall back to silence to keep cadence stable.
-        match pcm_rx.try_recv() {
-            Ok(frame) => {
-                if frame.len() == frame_bytes {
-                    pcm.copy_from_slice(&frame);
-                    if !logged_first_pcm {
-                        logged_first_pcm = true;
-                        info!(source_url = %source_url, first_pcm_ms = %playback_started.elapsed().as_millis(), "first pcm frame received");
+        // Allow a tiny wait to reduce false underruns when the PCM frame arrives slightly after the tick.
+        let mut got_real_frame = false;
+        if let Some(frame) = pcm_buf.pop_front() {
+            if frame.len() == frame_bytes {
+                pcm.copy_from_slice(&frame);
+                got_real_frame = true;
+            }
+        } else {
+            match pcm_rx.try_recv() {
+                Ok(frame) => {
+                    if frame.len() == frame_bytes {
+                        pcm.copy_from_slice(&frame);
+                        got_real_frame = true;
                     }
-                } else {
-                    pcm.fill(0);
-                    underruns += 1;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    match tokio::time::timeout(Duration::from_millis(3), pcm_rx.recv()).await {
+                        Ok(Some(frame)) => {
+                            if frame.len() == frame_bytes {
+                                pcm.copy_from_slice(&frame);
+                                got_real_frame = true;
+                            }
+                        }
+                        Ok(None) => {
+                            // ffmpeg finished / failed. Stop playback.
+                            break;
+                        }
+                        Err(_) => {}
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    // ffmpeg finished / failed. Stop playback.
+                    break;
                 }
             }
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                pcm.fill(0);
-                underruns += 1;
-            }
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                // ffmpeg finished / failed. Stop playback.
-                break;
-            }
         }
 
-        if underruns > 0 && underruns % 50 == 0 {
-            info!(%underruns, "playback underrun (sending silence frames to keep cadence)");
+        if got_real_frame {
+            underruns_consecutive = 0;
+        } else {
+            pcm.fill(0);
+            underruns_total += 1;
+            underruns_window += 1;
+            underruns_consecutive += 1;
         }
 
-        let vol = {
+        // If we keep sending silence for too long, treat it as a playback failure.
+        // The backend will auto-skip/delete on Playback ERROR.
+        if logged_first_pcm && underruns_consecutive >= 150 {
+            return Err(anyhow!(
+                "sustained pcm underrun ({} frames, {} ms)",
+                underruns_consecutive,
+                underruns_consecutive * 20
+            ));
+        }
+
+        if underruns_total > 0 && underruns_total % 50 == 0 {
+            info!(underruns_total = %underruns_total, "playback underrun (sending silence frames to keep cadence)");
+        }
+
+        let (vol, fx_pan, fx_width, fx_swap_lr) = {
             let st = status.lock().await;
             let r = (st.volume_percent as f32 / 100.0).clamp(0.0, 2.0);
-            if r <= 1.0 {
-                r.powf(1.6)
-            } else {
-                r
-            }
+            let vol = if r <= 1.0 { r.powf(1.6) } else { r };
+            (vol, st.fx_pan.clamp(-1.0, 1.0), st.fx_width.clamp(0.0, 3.0), st.fx_swap_lr)
         };
 
         for i in 0..(frame_samples_per_channel * channels) {
             let lo = pcm[i * 2];
             let hi = pcm[i * 2 + 1];
             let s = i16::from_le_bytes([lo, hi]) as f32;
-            float_buf[i] = (s / 32768.0) * vol;
+            let v = (s / 32768.0) * vol;
+            float_buf[i] = v;
+        }
+
+        // Apply FX on interleaved stereo: swap, width (mid/side), then pan (balance).
+        // Note: pan here is implemented as a simple balance control to keep center gain at 1.0.
+        if fx_swap_lr || (fx_width - 1.0).abs() > 0.0001 || fx_pan.abs() > 0.0001 {
+            let pan = fx_pan;
+            let (lg, rg) = if pan >= 0.0 {
+                ((1.0 - pan).clamp(0.0, 1.0), 1.0)
+            } else {
+                (1.0, (1.0 + pan).clamp(0.0, 1.0))
+            };
+            for i in 0..frame_samples_per_channel {
+                let idx = i * 2;
+                let mut l = float_buf[idx];
+                let mut r = float_buf[idx + 1];
+                if fx_swap_lr {
+                    std::mem::swap(&mut l, &mut r);
+                }
+                if (fx_width - 1.0).abs() > 0.0001 {
+                    let m = 0.5 * (l + r);
+                    let s = 0.5 * (l - r) * fx_width;
+                    l = m + s;
+                    r = m - s;
+                }
+                l *= lg;
+                r *= rg;
+                float_buf[idx] = l;
+                float_buf[idx + 1] = r;
+
+                let a_l = l.abs();
+                let a_r = r.abs();
+                let a = if a_l > a_r { a_l } else { a_r };
+                if a > max_abs_sample {
+                    max_abs_sample = a;
+                }
+                if a_l > 1.0 {
+                    clipped_samples += 1;
+                }
+                if a_r > 1.0 {
+                    clipped_samples += 1;
+                }
+            }
+        } else {
+            for i in 0..(frame_samples_per_channel * channels) {
+                let v = float_buf[i];
+                let a = v.abs();
+                if a > max_abs_sample {
+                    max_abs_sample = a;
+                }
+                if a > 1.0 {
+                    clipped_samples += 1;
+                }
+            }
         }
 
         let len = encoder
@@ -757,6 +1259,35 @@ async fn playback_loop(
         });
 
         let _ = ts3_audio_tx.send(packet).await;
+
+        if now >= diag_next {
+            diag_next = now + Duration::from_secs(5);
+            if underruns_window > 0 || clipped_samples > 0 || tick_jitter_max_ms > 25 {
+                warn!(
+                    source_url = %source_url,
+                    underruns_total = %underruns_total,
+                    underruns_window = %underruns_window,
+                    tick_jitter_max_ms = %tick_jitter_max_ms,
+                    clipped_samples = %clipped_samples,
+                    max_abs_sample = %max_abs_sample,
+                    "audio_encode_diag"
+                );
+            } else {
+                info!(
+                    source_url = %source_url,
+                    underruns_total = %underruns_total,
+                    underruns_window = %underruns_window,
+                    tick_jitter_max_ms = %tick_jitter_max_ms,
+                    clipped_samples = %clipped_samples,
+                    max_abs_sample = %max_abs_sample,
+                    "audio_encode_diag"
+                );
+            }
+            tick_jitter_max_ms = 0;
+            clipped_samples = 0;
+            max_abs_sample = 0.0;
+            underruns_window = 0;
+        }
     }
 
     // Signal end-of-stream to clients (flush/stop decoder).
@@ -781,7 +1312,8 @@ async fn main() -> Result<()> {
     let addr = env::args().nth(1).unwrap_or_else(|| "127.0.0.1:50051".to_string());
 
     let (ts3_audio_tx, ts3_audio_rx) = mpsc::channel::<OutPacket>(200);
-    let (ts3_notice_tx, ts3_notice_rx) = mpsc::channel::<String>(50);
+    let (ts3_notice_tx, ts3_notice_rx) = mpsc::channel::<(i32, String)>(50);
+    let (ts3_cmd_tx, ts3_cmd_rx) = mpsc::channel::<OutCommand>(50);
 
     let (events_tx, _events_rx) = broadcast::channel::<voicev1::Event>(512);
 
@@ -796,10 +1328,10 @@ async fn main() -> Result<()> {
     });
 
     let ts3_task = {
-        let events_tx = events_tx.clone();
+        let events_tx_clone = events_tx.clone();
         let shutdown_token_clone = shutdown_token.clone();
         tokio::spawn(async move {
-            if let Err(e) = ts3_actor(ts3_audio_rx, ts3_notice_rx, events_tx, shutdown_token_clone).await {
+            if let Err(e) = ts3_actor(ts3_audio_rx, ts3_notice_rx, ts3_cmd_rx, events_tx_clone, shutdown_token_clone).await {
                 error!(%e, "ts3 actor exited");
             }
         })
@@ -811,10 +1343,14 @@ async fn main() -> Result<()> {
             now_playing_title: String::new(),
             now_playing_source_url: String::new(),
             volume_percent: 100,
+            fx_pan: 0.0,
+            fx_width: 1.0,
+            fx_swap_lr: false,
         })),
         playback: Arc::new(Mutex::new(None)),
         ts3_audio_tx,
         ts3_notice_tx,
+        ts3_cmd_tx,
         events_tx,
     };
 
