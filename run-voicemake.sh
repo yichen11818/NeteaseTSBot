@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ cd "$ROOT_DIR"
+
 # 处理信号，确保子进程也能正确退出
 cleanup() {
     echo "Shutting down voice service..."
@@ -13,8 +16,14 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM
 
-if [[ -f "$(pwd)/tsbot.env" ]]; then
-  source "$(pwd)/tsbot.env"
+if [[ -f "$ROOT_DIR/tsbot.env" ]]; then
+  source "$ROOT_DIR/tsbot.env"
+fi
+
+if [[ -z "${TSBOT_TS3_IDENTITY_FILE:-}" ]]; then
+  export TSBOT_TS3_IDENTITY_FILE="$ROOT_DIR/logs/identity.json"
+elif [[ "${TSBOT_TS3_IDENTITY_FILE}" != /* ]]; then
+  export TSBOT_TS3_IDENTITY_FILE="$ROOT_DIR/${TSBOT_TS3_IDENTITY_FILE#./}"
 fi
 
 echo "Starting voice service..."
