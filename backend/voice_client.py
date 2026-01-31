@@ -20,6 +20,13 @@ class VoiceStatus:
     volume_percent: int
 
 
+@dataclass
+class VoiceAudioFx:
+    pan: float
+    width: float
+    swap_lr: bool
+
+
 class VoiceClient:
     def __init__(self) -> None:
         self._channel: grpc.aio.Channel | None = None
@@ -85,10 +92,15 @@ class VoiceClient:
         assert self._pb2 is not None
         await stub.Skip(self._pb2.Empty())
 
-    async def send_notice(self, message: str) -> None:
+    async def send_notice(self, message: str, *, target_mode: int = 2) -> None:
         stub = self._get_stub()
         assert self._pb2 is not None
-        await stub.SendNotice(self._pb2.NoticeRequest(message=message))
+        await stub.SendNotice(self._pb2.NoticeRequest(message=message, target_mode=int(target_mode)))
+
+    async def set_client_description(self, description: str) -> None:
+        stub = self._get_stub()
+        assert self._pb2 is not None
+        await stub.SetClientDescription(self._pb2.SetClientDescriptionRequest(description=description))
 
     async def set_volume(self, volume_percent: int) -> None:
         stub = self._get_stub()
@@ -104,6 +116,34 @@ class VoiceClient:
             now_playing_title=resp.now_playing_title,
             now_playing_source_url=resp.now_playing_source_url,
             volume_percent=resp.volume_percent,
+        )
+
+    async def set_audio_fx(
+        self,
+        *,
+        pan: float | None = None,
+        width: float | None = None,
+        swap_lr: bool | None = None,
+    ) -> None:
+        stub = self._get_stub()
+        assert self._pb2 is not None
+        req = self._pb2.SetAudioFxRequest()
+        if pan is not None:
+            req.pan = float(pan)
+        if width is not None:
+            req.width = float(width)
+        if swap_lr is not None:
+            req.swap_lr = bool(swap_lr)
+        await stub.SetAudioFx(req)
+
+    async def get_audio_fx(self) -> VoiceAudioFx:
+        stub = self._get_stub()
+        assert self._pb2 is not None
+        resp = await stub.GetAudioFx(self._pb2.Empty())
+        return VoiceAudioFx(
+            pan=float(getattr(resp, "pan", 0.0) or 0.0),
+            width=float(getattr(resp, "width", 1.0) or 1.0),
+            swap_lr=bool(getattr(resp, "swap_lr", False) or False),
         )
 
     async def subscribe_events(

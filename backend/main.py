@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import hashlib
 import os
 import time
@@ -9,7 +10,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .crypto import decrypt_text, encrypt_text
@@ -50,6 +51,13 @@ _repeat_mode: str = "none"  # "none", "all", "one"
 _shuffle_queue: list[int] = []
 _current_shuffle_index: int = -1
 
+_recent_ts_chats: deque[dict] = deque(maxlen=100)
+
+_main_loop: asyncio.AbstractEventLoop | None = None
+_ts_desc_task: asyncio.Task[None] | None = None
+_ts_desc_requested: bool = False
+_ts_desc_last_sent_at: float = 0.0
+
 
 class SearchResponse(BaseModel):
     raw: dict
@@ -72,14 +80,27 @@ class VolumeUpdateRequest(BaseModel):
     volume_percent: int
 
 
+class AudioFxUpdateRequest(BaseModel):
+    pan: float | None = None
+    width: float | None = None
+    swap_lr: bool | None = None
+
+
 class AdminCookieSetRequest(BaseModel):
     cookie: str
+
+
+class TSClientDescriptionRequest(BaseModel):
+    description: str
 
 
 @app.on_event("startup")
 async def _startup() -> None:
     global _chat_task
+    global _main_loop
     create_db_and_tables()
+
+    _main_loop = asyncio.get_running_loop()
     session = new_session()
     try:
         row = session.get(Secret, "voice_volume")
@@ -90,6 +111,8 @@ async def _startup() -> None:
                 pass
     finally:
         session.close()
+
+    _schedule_ts_description_update()
 
     if _chat_task is None or _chat_task.done():
         _chat_task = asyncio.create_task(_chat_command_worker())
@@ -136,6 +159,105 @@ async def _set_now_playing_queue_item(
             _current_album = (album or "").strip()
             _current_artwork_url = (artwork_url or "").strip()
 
+    _schedule_ts_description_update()
+
+
+async def _build_ts_description(*, queue_preview: int = 5) -> str:
+    # Snapshot playback state under lock
+    async with _playback_lock:
+        cur_id = _current_queue_item_id
+        paused = _play_started_at is not None and _paused_at is not None
+
+    lines: list[str] = []
+
+    session = new_session()
+    try:
+        if cur_id:
+            cur = session.get(QueueItem, int(cur_id))
+            if cur:
+                t = (cur.title or "").strip()
+                a = (cur.artist or "").strip()
+                state = "暂停" if paused else "正在播放"
+                if a:
+                    lines.append(f"{state}: {t} - {a}")
+                else:
+                    lines.append(f"{state}: {t}")
+            else:
+                lines.append("正在播放: (未知)")
+
+            q = (
+                select(QueueItem)
+                .where(QueueItem.id >= int(cur_id))
+                .order_by(QueueItem.id.asc())
+                .limit(int(queue_preview))
+            )
+            rows = session.execute(q).scalars().all()
+        else:
+            lines.append("状态: 空闲")
+            q = select(QueueItem).order_by(QueueItem.id.asc()).limit(int(queue_preview))
+            rows = session.execute(q).scalars().all()
+
+        if rows:
+            lines.append("队列:")
+            for i, r in enumerate(rows, 1):
+                t = (r.title or "").strip()
+                a = (r.artist or "").strip()
+                if a:
+                    lines.append(f"{i}. {t} - {a}")
+                else:
+                    lines.append(f"{i}. {t}")
+        else:
+            lines.append("队列: 空")
+    finally:
+        session.close()
+
+    desc = "\n".join(lines).strip()
+    if len(desc) > 700:
+        desc = desc[:700]
+    return desc
+
+
+def _schedule_ts_description_update() -> None:
+    global _ts_desc_task, _ts_desc_requested
+
+    _ts_desc_requested = True
+
+    def _ensure_task() -> None:
+        global _ts_desc_task
+        if _ts_desc_task is None or _ts_desc_task.done():
+            _ts_desc_task = asyncio.create_task(_ts_desc_worker())
+
+    try:
+        asyncio.get_running_loop()
+        _ensure_task()
+    except RuntimeError:
+        # Called from a threadpool (sync FastAPI endpoints).
+        if _main_loop is not None:
+            _main_loop.call_soon_threadsafe(_ensure_task)
+
+
+async def _ts_desc_worker() -> None:
+    global _ts_desc_requested, _ts_desc_last_sent_at
+
+    # Debounce bursts into one update.
+    while _ts_desc_requested:
+        _ts_desc_requested = False
+        await asyncio.sleep(0.8)
+        if _ts_desc_requested:
+            continue
+
+        # Rate limit: avoid spamming TS3 with clientupdate.
+        now = time.time()
+        if now - _ts_desc_last_sent_at < 3.0:
+            await asyncio.sleep(3.0 - (now - _ts_desc_last_sent_at))
+
+        try:
+            desc = await _build_ts_description(queue_preview=5)
+            await voice.set_client_description(desc)
+            _ts_desc_last_sent_at = time.time()
+        except Exception:
+            pass
+
 
 async def _take_now_playing_if_match(*, source_url: str) -> int | None:
     """If current playing source_url matches, clear it and return queue item id."""
@@ -171,6 +293,8 @@ async def _mark_playback_paused() -> None:
             return
         _paused_at = time.monotonic()
 
+    _schedule_ts_description_update()
+
 
 async def _mark_playback_resumed() -> None:
     global _paused_at, _paused_total_s
@@ -181,6 +305,8 @@ async def _mark_playback_resumed() -> None:
             return
         _paused_total_s += max(0.0, time.monotonic() - _paused_at)
         _paused_at = None
+
+    _schedule_ts_description_update()
 
 
 def _resolve_playback_position_s(*, now_s: float, started_at: float, paused_at: float | None, paused_total_s: float) -> float:
@@ -278,11 +404,13 @@ async def _delete_queue_item(item_id: int) -> None:
     finally:
         session.close()
 
+    _schedule_ts_description_update()
+
 # Alias for backward compatibility
 _remove_queue_item_internal = _delete_queue_item
 
 
-async def _auto_play_next_from_queue() -> None:
+async def _auto_play_next_from_queue(*, start_after_id: int | None = None) -> None:
     global _current_shuffle_index, _shuffle_queue
     
     session = new_session()
@@ -301,15 +429,16 @@ async def _auto_play_next_from_queue() -> None:
             _current_shuffle_index = next_index
         else:
             # Regular queue order
-            if _current_queue_item_id and _repeat_mode == "one":
+            cursor_id = start_after_id if start_after_id is not None else _current_queue_item_id
+            if start_after_id is None and _current_queue_item_id and _repeat_mode == "one":
                 # Repeat current track
                 item_id = _current_queue_item_id
             else:
                 # Get next track in regular order
-                if _current_queue_item_id:
+                if cursor_id:
                     nxt = session.execute(
                         select(QueueItem)
-                        .where(QueueItem.id > _current_queue_item_id)
+                        .where(QueueItem.id > cursor_id)
                         .order_by(QueueItem.id.asc())
                         .limit(1)
                     ).scalars().first()
@@ -433,6 +562,28 @@ async def set_voice_volume(
     return {"ok": True, "volume_percent": v}
 
 
+@app.get("/voice/fx")
+async def get_voice_fx() -> dict:
+    fx = await voice.get_audio_fx()
+    return {
+        "pan": fx.pan,
+        "width": fx.width,
+        "swap_lr": fx.swap_lr,
+    }
+
+
+@app.put("/voice/fx")
+async def set_voice_fx(req: AudioFxUpdateRequest) -> dict:
+    await voice.set_audio_fx(pan=req.pan, width=req.width, swap_lr=req.swap_lr)
+    fx = await voice.get_audio_fx()
+    return {
+        "ok": True,
+        "pan": fx.pan,
+        "width": fx.width,
+        "swap_lr": fx.swap_lr,
+    }
+
+
 @app.post("/voice/play")
 async def voice_play() -> dict:
     st = await voice.get_status()
@@ -457,7 +608,13 @@ async def voice_pause() -> dict:
 @app.post("/voice/next")
 async def voice_next() -> dict:
     global _current_shuffle_index, _shuffle_queue
-    
+    current_item_id = None
+    async with _playback_lock:
+        current_item_id = _current_queue_item_id
+
+    if current_item_id:
+        await _remove_queue_item_internal(current_item_id)
+
     if _shuffle_enabled and _shuffle_queue:
         # Handle shuffled next
         next_index = _current_shuffle_index + 1
@@ -477,9 +634,11 @@ async def voice_next() -> dict:
         return {"ok": True, "action": "play_shuffled_next"}
     else:
         # Regular next behavior - just play next without removing current
+        async with _playback_lock:
+            start_after_id = _current_queue_item_id
         await _set_now_playing_queue_item(None)
         await voice.skip()
-        await _auto_play_next_from_queue()
+        await _auto_play_next_from_queue(start_after_id=start_after_id)
         return {"ok": True, "action": "next"}
 
 
@@ -502,7 +661,7 @@ async def voice_skip() -> dict:
         await voice.skip()
         
         # Auto play next song
-        await _auto_play_next_from_queue()
+        await _auto_play_next_from_queue(start_after_id=current_item_id)
         return {"ok": True, "action": "skipped_and_next", "removed_track_id": current_item_id}
     else:
         return {"ok": True, "action": "no_current_track", "message": "当前没有正在播放的歌曲"}
@@ -616,6 +775,7 @@ async def voice_shuffle(req: ShuffleRequest) -> dict:
         _shuffle_queue = []
         _current_shuffle_index = -1
     
+    _schedule_ts_description_update()
     return {"ok": True, "enabled": _shuffle_enabled}
 
 
@@ -632,6 +792,7 @@ async def voice_repeat(req: RepeatRequest) -> dict:
     else:
         _repeat_mode = "none"
     
+    _schedule_ts_description_update()
     return {"ok": True, "mode": _repeat_mode}
 
 
@@ -808,6 +969,10 @@ def _resolve_netease_song_url(data: dict) -> str:
 
     item_code = (it or {}).get("code")
     if item_code not in (None, 200):
+        if item_code == 404:
+            raise HTTPException(status_code=404, detail="netease track not found (song removed/unavailable)")
+        if item_code == -110:
+            raise HTTPException(status_code=503, detail="netease temporarily unavailable (code=-110), please retry")
         raise HTTPException(status_code=403, detail=f"netease track unavailable: code={item_code}")
 
     fee = (it or {}).get("fee")
@@ -956,7 +1121,9 @@ def _format_help() -> str:
         "播放|play <song_id|keywords> - play now\n"
         "队列|queue - show queue\n"
         "暂停|pause / 恢复|resume / 停止|stop / 跳过|skip\n"
-        "音量|vol <0-200> - set volume"
+        "音量|vol <0-200> - set volume\n"
+        "音效|fx - show audio fx\n"
+        "fx pan <-1..1> / fx width <0..3> / fx swap <on|off> / fx reset"
     )
 
 
@@ -1026,6 +1193,8 @@ async def _enqueue_netease_song(
         session.add(item)
         session.commit()
 
+        _schedule_ts_description_update()
+
         if play_now:
             await _set_now_playing_queue_item(
                 int(item.id),
@@ -1054,7 +1223,7 @@ async def _enqueue_netease_song(
         session.close()
 
 
-async def _handle_chat_command(invoker_name: str, message: str) -> None:
+async def _handle_chat_command(invoker_name: str, message: str, *, target_mode: int = 2) -> None:
     raw = (message or "")
     msg = raw.strip()
     if not msg:
@@ -1129,6 +1298,11 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
         "跳过": "skip",
         "下一首": "skip",
         "切歌": "skip",
+        "desc": "desc",
+        "简介": "desc",
+        "签名": "desc",
+        "fx": "fx",
+        "音效": "fx",
     }
 
     cmd = alias_to_cmd.get(head_norm)
@@ -1142,7 +1316,7 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
             return
         if len(t) > 700:
             t = t[:700] + "..."
-        await voice.send_notice(t)
+        await voice.send_notice(t, target_mode=int(target_mode))
 
     try:
         if cmd in ("help", "h"):
@@ -1151,18 +1325,28 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
 
         if cmd in ("now", "np", "status"):
             st = await voice.get_status()
-            await reply(f"{st.state} / {st.now_playing_title} / vol={st.volume_percent}")
+            session = new_session()
+            try:
+                q_total = int(session.execute(select(func.count(QueueItem.id))).scalar() or 0)
+            finally:
+                session.close()
+            title = (st.now_playing_title or "").strip()
+            if title:
+                await reply(f"当前: {title}\n状态: {st.state} / 音量: {st.volume_percent} / 队列: {q_total}")
+            else:
+                await reply(f"当前: (空闲)\n状态: {st.state} / 音量: {st.volume_percent} / 队列: {q_total}")
             return
 
         if cmd == "queue":
             session = new_session()
             try:
+                total = int(session.execute(select(func.count(QueueItem.id))).scalar() or 0)
                 rows = session.execute(select(QueueItem).order_by(QueueItem.id.asc()).limit(5)).scalars().all()
                 if not rows:
-                    await reply("queue is empty")
+                    await reply("队列为空")
                     return
-                lines = [f"#{r.id} {r.title} - {r.artist}".strip() for r in rows]
-                await reply("queue:\n" + "\n".join(lines))
+                lines = [f"#{r.id} {r.title} - {r.artist}".strip(" -") for r in rows]
+                await reply(f"队列(前{len(lines)}/共{total}):\n" + "\n".join(lines))
                 return
             finally:
                 session.close()
@@ -1170,19 +1354,19 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
         if cmd == "pause":
             await _mark_playback_paused()
             await voice.pause()
-            await reply("paused")
+            await reply("已暂停")
             return
 
         if cmd in ("resume", "continue"):
             await _mark_playback_resumed()
             await voice.resume()
-            await reply("resumed")
+            await reply("已恢复")
             return
 
         if cmd == "stop":
             await _set_now_playing_queue_item(None)
             await voice.stop()
-            await reply("stopped")
+            await reply("已停止")
             return
 
         if cmd == "skip":
@@ -1208,12 +1392,12 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
 
         if cmd in ("vol", "volume"):
             if not arg:
-                await reply("usage: !vol <0-200>")
+                await reply("用法: vol <0-200>")
                 return
             try:
                 v = int(arg)
             except ValueError:
-                await reply("usage: !vol <0-200>")
+                await reply("用法: vol <0-200>")
                 return
             v = max(0, min(200, v))
             await voice.set_volume(v)
@@ -1228,17 +1412,77 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
                 session.commit()
             finally:
                 session.close()
-            await reply(f"volume set to {v}")
+            await reply(f"音量已设置为 {v}")
+            return
+
+        if cmd == "fx":
+            if not arg:
+                fx = await voice.get_audio_fx()
+                await reply(
+                    f"音效: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)}\n"
+                    "用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx reset"
+                )
+                return
+
+            parts = [p for p in arg.split() if p]
+            sub = (parts[0] if parts else "").strip().lower()
+
+            if sub == "reset":
+                await voice.set_audio_fx(pan=0.0, width=1.0, swap_lr=False)
+                fx = await voice.get_audio_fx()
+                await reply(f"已重置音效: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)}")
+                return
+
+            if len(parts) < 2:
+                await reply("用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx reset")
+                return
+
+            val = parts[1].strip().lower()
+            if sub == "pan":
+                try:
+                    p = float(val)
+                except ValueError:
+                    await reply("用法: fx pan <-1..1>")
+                    return
+                await voice.set_audio_fx(pan=max(-1.0, min(1.0, p)))
+            elif sub == "width":
+                try:
+                    w = float(val)
+                except ValueError:
+                    await reply("用法: fx width <0..3>")
+                    return
+                await voice.set_audio_fx(width=max(0.0, min(3.0, w)))
+            elif sub == "swap":
+                on = val in ("1", "true", "on", "yes", "y", "开")
+                off = val in ("0", "false", "off", "no", "n", "关")
+                if not (on or off):
+                    await reply("用法: fx swap <on|off>")
+                    return
+                await voice.set_audio_fx(swap_lr=bool(on))
+            else:
+                await reply("用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx reset")
+                return
+
+            fx = await voice.get_audio_fx()
+            await reply(f"音效已更新: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)}")
+            return
+
+        if cmd == "desc":
+            if not arg:
+                await reply("用法: desc <内容>")
+                return
+            await voice.set_client_description(arg)
+            await reply("简介已更新")
             return
 
         if cmd == "search":
             if not arg:
-                await reply("usage: !search <keywords>")
+                await reply("用法: search <关键词>")
                 return
             raw = await netease.search(keywords=arg, limit=5)
             songs = (((raw or {}).get("result") or {}).get("songs") or [])
             if not songs:
-                await reply("no results")
+                await reply("没有找到结果")
                 return
             lines: list[str] = []
             for i, s in enumerate(songs[:5], start=1):
@@ -1246,12 +1490,12 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
                 title = str((s or {}).get("name") or "")
                 artist = ", ".join([str(a.get("name") or "") for a in ((s or {}).get("ar") or []) if isinstance(a, dict)])
                 lines.append(f"{i}. {sid} {title} - {artist}".strip())
-            await reply("results:\n" + "\n".join(lines))
+            await reply("搜索结果(可直接用 add/play + 歌曲ID):\n" + "\n".join(lines))
             return
 
         if cmd in ("add", "play"):
             if not arg:
-                await reply(f"usage: !{cmd} <song_id|keywords>")
+                await reply(f"用法: {cmd} <歌曲ID|关键词>")
                 return
 
             song_id = _try_parse_song_id(arg)
@@ -1262,7 +1506,7 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
                 raw = await netease.search(keywords=arg, limit=1)
                 meta = _extract_song_meta_from_search_first(raw)
                 if meta is None:
-                    await reply("no results")
+                    await reply("没有找到结果")
                     return
                 song_id, title, artist = meta
             else:
@@ -1286,10 +1530,48 @@ async def _handle_chat_command(invoker_name: str, message: str) -> None:
                 play_now=(cmd == "play"),
                 requested_by=invoker_name,
             )
-            await reply(f"ok: queued #{item_id}{' (playing)' if cmd == 'play' else ''}{' (trial)' if trial else ''}")
+            song_label = f"{title} - {artist}".strip(" -")
+            extra = ""
+            if trial:
+                extra = "(试听)"
+            if cmd == "play":
+                await reply(f"立即播放: #{item_id} {song_label} {extra}\n点歌: {invoker_name}")
+                return
+
+            auto_started = False
+            try:
+                st = await voice.get_status()
+                cur = str(getattr(st, "state", "") or "").strip().upper()
+                if cur == "STATE_IDLE":
+                    await _auto_play_next_from_queue()
+                    auto_started = True
+            except Exception as e:
+                await reply(f"已加入队列: #{item_id} {song_label} {extra}\n点歌: {invoker_name}\n自动播放失败: {e}")
+                return
+
+            if auto_started:
+                await reply(f"已加入队列并开始播放: #{item_id} {song_label} {extra}\n点歌: {invoker_name}")
+            else:
+                await reply(f"已加入队列: #{item_id} {song_label} {extra}\n点歌: {invoker_name}")
+
             return
 
         await reply("unknown command, try !help")
+    except HTTPException as e:
+        detail = str(getattr(e, "detail", "") or "").strip()
+        if e.status_code == 404:
+            await reply("加载失败：歌曲不存在/已下架（无版权或资源不可用）")
+            return
+        if e.status_code == 402:
+            await reply("加载失败：需要 VIP/付费账号（已尝试试听/降码率，如仍失败请换歌）")
+            return
+        if e.status_code == 403:
+            await reply("加载失败：无版权/地区限制/不可播放")
+            return
+        if detail:
+            await reply(f"error: {e.status_code}: {detail}")
+        else:
+            await reply(f"error: {e.status_code}")
     except Exception as e:
         await reply(f"error: {e}")
 
@@ -1305,9 +1587,19 @@ async def _chat_command_worker() -> None:
 
                     if kind == "chat":
                         chat = ev.chat
+                        try:
+                            logger.info(
+                                "ts3 chat event: target_mode=%s invoker=%s msg=%s",
+                                int(getattr(chat, "target_mode", 0) or 0),
+                                str(getattr(chat, "invoker_name", "") or ""),
+                                str(getattr(chat, "message", "") or ""),
+                            )
+                        except Exception:
+                            pass
                         await _handle_chat_command(
                             str(getattr(chat, "invoker_name", "")),
                             str(getattr(chat, "message", "")),
+                            target_mode=int(getattr(chat, "target_mode", 2) or 2),
                         )
                         continue
 
@@ -1321,12 +1613,26 @@ async def _chat_command_worker() -> None:
                             if item_id is not None:
                                 await _delete_queue_item(item_id)
                                 await _auto_play_next_from_queue()
+                        if ty == 3:
+                            item_id = await _take_now_playing_if_match(source_url=src)
+                            if item_id is not None:
+                                await _delete_queue_item(item_id)
+                                try:
+                                    await voice.send_notice(
+                                        f"播放失败，已跳过并删除: #{item_id}\n将播放下一首",
+                                        target_mode=2,
+                                    )
+                                except Exception:
+                                    pass
+                                await _auto_play_next_from_queue()
                         continue
                 except Exception:
+                    logger.exception("chat worker: failed to handle event")
                     continue
         except asyncio.CancelledError:
             return
         except Exception:
+            logger.exception("chat worker: subscribe loop crashed; retrying")
             await asyncio.sleep(2)
 
 
@@ -1359,6 +1665,16 @@ async def admin_account(request: Request, session: Session = Depends(get_session
         "nickname": profile.get("nickname") or "",
         "vip_type": profile.get("vipType"),
     }
+
+
+@app.post("/admin/ts/description")
+async def admin_ts_description(req: TSClientDescriptionRequest, request: Request) -> dict:
+    _require_admin_token(request)
+    desc = (req.description or "").strip()
+    if len(desc) > 700:
+        raise HTTPException(status_code=400, detail="description too long")
+    await voice.set_client_description(desc)
+    return {"ok": True}
 
 
 @app.get("/admin/debug/cookie")
@@ -1477,7 +1793,7 @@ async def netease_account(request: Request) -> dict:
 
 
 @app.get("/netease/likelist")
-async def netease_likelist(request: Request) -> dict:
+async def netease_likelist(request: Request, offset: int = 0, limit: int = 0) -> dict:
     cookie = _get_netease_cookie_from_header(request)
     account = await netease.user_account(cookie=cookie)
     profile = (account or {}).get("profile") or {}
@@ -1490,31 +1806,53 @@ async def netease_likelist(request: Request) -> dict:
     songs: list[dict] = []
     try:
         if isinstance(ids, list) and ids:
-            # NeteaseCloudMusicApi supports comma-separated ids in /song/detail.
-            # Avoid overly large payloads; fetch in chunks.
             chunk_size = 200
             id_strs = [str(i) for i in ids if i is not None and str(i).strip()]
-            for i in range(0, len(id_strs), chunk_size):
-                chunk = id_strs[i : i + chunk_size]
+
+            if offset < 0:
+                offset = 0
+            if limit and limit > 0:
+                page_ids = id_strs[offset : offset + limit]
+            else:
+                page_ids = id_strs
+
+            async def _fetch_song_detail(chunk: list[str]) -> list[dict]:
                 if not chunk:
-                    continue
+                    return []
                 detail = await netease.song_detail(song_id=",".join(chunk), cookie=cookie)
                 dsongs = (detail or {}).get("songs") or []
                 if isinstance(dsongs, list) and dsongs:
-                    songs.extend([s for s in dsongs if isinstance(s, dict)])
+                    return [s for s in dsongs if isinstance(s, dict)]
+                return []
+
+            chunks = [page_ids[i : i + chunk_size] for i in range(0, len(page_ids), chunk_size)]
+            results = await asyncio.gather(*[_fetch_song_detail(c) for c in chunks], return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception):
+                    continue
+                songs.extend(r)
     except Exception:
         songs = []
 
     # Keep original fields (ids, code, etc.) and add songs for frontend rendering.
     out = dict(data or {})
     out["songs"] = songs
+    try:
+        if isinstance(ids, list):
+            out["total"] = len(ids)
+            out["offset"] = int(offset)
+            out["limit"] = int(limit)
+            if limit and limit > 0:
+                out["has_more"] = (offset + limit) < len(ids)
+    except Exception:
+        pass
     return out
 
 
 @app.get("/netease/likes")
-async def netease_likes(request: Request) -> dict:
+async def netease_likes(request: Request, offset: int = 0, limit: int = 0) -> dict:
     """Alias for likelist to match frontend expectations"""
-    return await netease_likelist(request)
+    return await netease_likelist(request, offset=offset, limit=limit)
 
 
 @app.get("/netease/playlists")
@@ -1589,6 +1927,8 @@ def delete_queue_item(item_id: int, session: Session = Depends(get_session)) -> 
         raise HTTPException(status_code=404, detail="not found")
     session.delete(item)
     session.commit()
+
+    _schedule_ts_description_update()
     return {"ok": True}
 
 
@@ -1596,7 +1936,9 @@ def delete_queue_item(item_id: int, session: Session = Depends(get_session)) -> 
 async def play_queue_item(item_id: int, session: Session = Depends(get_session)) -> dict:
     ok = await _play_queue_item_internal(item_id, requested_by="web")
     if not ok:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="queue item not found")
+
+    _schedule_ts_description_update()
     return {"ok": True}
 
 
