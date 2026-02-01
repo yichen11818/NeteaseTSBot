@@ -78,12 +78,16 @@ message SetAudioFxRequest {
   optional float width = 2;
   // Swap L/R channels.
   optional bool swap_lr = 3;
+  optional float bass_db = 4;
+  optional float reverb_mix = 5;
 }
 
 message AudioFxResponse {
   float pan = 1;
   float width = 2;
   bool swap_lr = 3;
+  float bass_db = 4;
+  float reverb_mix = 5;
 }
 
 message SubscribeRequest {

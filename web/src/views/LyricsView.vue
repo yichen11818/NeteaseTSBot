@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { apiGet, apiPost } from '../api'
 import LyricsDisplay from '../components/LyricsDisplay.vue'
+import { isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 import { 
   ArrowLeft, 
   Play, 
@@ -44,6 +45,7 @@ async function loadState() {
     isPlaying.value = st?.state === 'playing'
     isShuffled.value = Boolean(st?.is_shuffled ?? false)
     repeatMode.value = st?.repeat_mode ?? 'none'
+    isLiked.value = isFavoriteSong(trackId.value)
   } catch {
     // ignore
   }
@@ -122,16 +124,16 @@ async function seekTo(event: MouseEvent) {
 
 async function toggleLike() {
   if (!trackId.value) return
-  try {
-    if (isLiked.value) {
-      await apiPost(`/likes/${trackId.value}/remove`, {})
-    } else {
-      await apiPost(`/likes/${trackId.value}/add`, {})
-    }
-    isLiked.value = !isLiked.value
-  } catch (e) {
-    console.error('Failed to toggle like:', e)
-  }
+  const liked = toggleFavoriteSong({
+    id: trackId.value,
+    name: title.value,
+    ar: [{ name: artist.value }],
+    al: {
+      name: album.value,
+      picUrl: artwork.value,
+    },
+  })
+  isLiked.value = liked
 }
 
 async function toggleShuffle() {

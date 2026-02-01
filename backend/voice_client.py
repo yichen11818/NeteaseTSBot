@@ -25,6 +25,8 @@ class VoiceAudioFx:
     pan: float
     width: float
     swap_lr: bool
+    bass_db: float
+    reverb_mix: float
 
 
 class VoiceClient:
@@ -124,6 +126,8 @@ class VoiceClient:
         pan: float | None = None,
         width: float | None = None,
         swap_lr: bool | None = None,
+        bass_db: float | None = None,
+        reverb_mix: float | None = None,
     ) -> None:
         stub = self._get_stub()
         assert self._pb2 is not None
@@ -134,6 +138,10 @@ class VoiceClient:
             req.width = float(width)
         if swap_lr is not None:
             req.swap_lr = bool(swap_lr)
+        if bass_db is not None:
+            req.bass_db = float(bass_db)
+        if reverb_mix is not None:
+            req.reverb_mix = float(reverb_mix)
         await stub.SetAudioFx(req)
 
     async def get_audio_fx(self) -> VoiceAudioFx:
@@ -144,6 +152,8 @@ class VoiceClient:
             pan=float(getattr(resp, "pan", 0.0) or 0.0),
             width=float(getattr(resp, "width", 1.0) or 1.0),
             swap_lr=bool(getattr(resp, "swap_lr", False) or False),
+            bass_db=float(getattr(resp, "bass_db", 0.0) or 0.0),
+            reverb_mix=float(getattr(resp, "reverb_mix", 0.0) or 0.0),
         )
 
     async def subscribe_events(

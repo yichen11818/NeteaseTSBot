@@ -3,12 +3,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use audiopus::coder::Encoder;
 use futures::{FutureExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::{broadcast, mpsc, watch, Mutex};
 use tokio_stream::wrappers::{BroadcastStream, TcpListenerStream};
@@ -43,6 +45,114 @@ struct SharedStatus {
     fx_pan: f32,
     fx_width: f32,
     fx_swap_lr: bool,
+    fx_bass_db: f32,
+    fx_reverb_mix: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct PersistedVoiceState {
+    volume_percent: i32,
+    fx_pan: f32,
+    fx_width: f32,
+    fx_swap_lr: bool,
+    fx_bass_db: f32,
+    fx_reverb_mix: f32,
+}
+
+impl Default for PersistedVoiceState {
+    fn default() -> Self {
+        Self {
+            volume_percent: 100,
+            fx_pan: 0.0,
+            fx_width: 1.0,
+            fx_swap_lr: false,
+            fx_bass_db: 0.0,
+            fx_reverb_mix: 0.0,
+        }
+    }
+}
+
+impl PersistedVoiceState {
+    fn from_status(st: &SharedStatus) -> Self {
+        Self {
+            volume_percent: st.volume_percent,
+            fx_pan: st.fx_pan,
+            fx_width: st.fx_width,
+            fx_swap_lr: st.fx_swap_lr,
+            fx_bass_db: st.fx_bass_db,
+            fx_reverb_mix: st.fx_reverb_mix,
+        }
+    }
+}
+
+struct ReverbChannel {
+    comb_bufs: [Vec<f32>; 2],
+    comb_idx: [usize; 2],
+    allpass_buf: Vec<f32>,
+    allpass_idx: usize,
+}
+
+impl ReverbChannel {
+    fn new(comb_lens: [usize; 2], allpass_len: usize) -> Self {
+        Self {
+            comb_bufs: [vec![0.0; comb_lens[0]], vec![0.0; comb_lens[1]]],
+            comb_idx: [0, 0],
+            allpass_buf: vec![0.0; allpass_len],
+            allpass_idx: 0,
+        }
+    }
+
+    fn process(&mut self, x: f32) -> f32 {
+        let comb_feedback = 0.78f32;
+        let mut s = 0.0f32;
+        for i in 0..2 {
+            let idx = self.comb_idx[i];
+            let y = self.comb_bufs[i][idx];
+            self.comb_bufs[i][idx] = x + y * comb_feedback;
+            self.comb_idx[i] = (idx + 1) % self.comb_bufs[i].len();
+            s += y;
+        }
+        s *= 0.5;
+
+        let ap_feedback = 0.5f32;
+        let idx = self.allpass_idx;
+        let buf = self.allpass_buf[idx];
+        let y = -s + buf;
+        self.allpass_buf[idx] = s + buf * ap_feedback;
+        self.allpass_idx = (idx + 1) % self.allpass_buf.len();
+        y
+    }
+}
+
+struct SimpleReverb {
+    l: ReverbChannel,
+    r: ReverbChannel,
+}
+
+impl SimpleReverb {
+    fn new() -> Self {
+        Self {
+            l: ReverbChannel::new([1487, 1601], 556),
+            r: ReverbChannel::new([1559, 1699], 579),
+        }
+    }
+
+    fn process_stereo(&mut self, l: f32, r: f32, mix: f32) -> (f32, f32) {
+        if mix <= 0.0001 {
+            return (l, r);
+        }
+        let mix = mix.clamp(0.0, 1.0);
+        let wet_gain = 0.28f32;
+        let in_l = l;
+        let in_r = r;
+        let wet_l = self.l.process(in_l);
+        let wet_r = self.r.process(in_r);
+        (
+            in_l * (1.0 - mix) + wet_l * (mix * wet_gain),
+            in_r * (1.0 - mix) + wet_r * (mix * wet_gain),
+        )
+    }
 }
 
 struct PlaybackControl {
@@ -114,6 +224,16 @@ struct VoiceServiceImpl {
     ts3_notice_tx: mpsc::Sender<(i32, String)>,
     ts3_cmd_tx: mpsc::Sender<OutCommand>,
     events_tx: broadcast::Sender<voicev1::Event>,
+    persist_tx: mpsc::Sender<PersistedVoiceState>,
+}
+
+fn load_persisted_voice_state(path: &Path) -> Option<PersistedVoiceState> {
+    let raw = fs::read_to_string(path).ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<PersistedVoiceState>(raw).ok()
 }
 
 fn now_unix_ms() -> i64 {
@@ -348,8 +468,12 @@ impl VoiceService for VoiceServiceImpl {
         req: Request<voicev1::SetVolumeRequest>,
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
         let v = req.into_inner().volume_percent.clamp(0, 200);
-        let mut st = self.status.lock().await;
-        st.volume_percent = v;
+        let snapshot = {
+            let mut st = self.status.lock().await;
+            st.volume_percent = v;
+            PersistedVoiceState::from_status(&st)
+        };
+        let _ = self.persist_tx.try_send(snapshot);
 
         Ok(Response::new(voicev1::CommandResponse {
             ok: true,
@@ -375,17 +499,29 @@ impl VoiceService for VoiceServiceImpl {
         req: Request<voicev1::SetAudioFxRequest>,
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
         let r = req.into_inner();
-        let mut st = self.status.lock().await;
+        let snapshot = {
+            let mut st = self.status.lock().await;
 
-        if let Some(p) = r.pan {
-            st.fx_pan = p.clamp(-1.0, 1.0);
-        }
-        if let Some(w) = r.width {
-            st.fx_width = w.clamp(0.0, 3.0);
-        }
-        if let Some(s) = r.swap_lr {
-            st.fx_swap_lr = s;
-        }
+            if let Some(p) = r.pan {
+                st.fx_pan = p.clamp(-1.0, 1.0);
+            }
+            if let Some(w) = r.width {
+                st.fx_width = w.clamp(0.0, 3.0);
+            }
+            if let Some(s) = r.swap_lr {
+                st.fx_swap_lr = s;
+            }
+
+            if let Some(b) = r.bass_db {
+                st.fx_bass_db = b.clamp(0.0, 18.0);
+            }
+            if let Some(m) = r.reverb_mix {
+                st.fx_reverb_mix = m.clamp(0.0, 1.0);
+            }
+
+            PersistedVoiceState::from_status(&st)
+        };
+        let _ = self.persist_tx.try_send(snapshot);
 
         Ok(Response::new(voicev1::CommandResponse {
             ok: true,
@@ -402,6 +538,8 @@ impl VoiceService for VoiceServiceImpl {
             pan: st.fx_pan,
             width: st.fx_width,
             swap_lr: st.fx_swap_lr,
+            bass_db: st.fx_bass_db,
+            reverb_mix: st.fx_reverb_mix,
         }))
     }
 
@@ -1030,6 +1168,14 @@ async fn playback_loop(
     let mut float_buf = vec![0f32; frame_samples_per_channel * channels];
     let mut opus_out = [0u8; 1275];
 
+    let mut reverb = SimpleReverb::new();
+    let bass_cutoff_hz: f32 = 150.0;
+    let fs: f32 = 48000.0;
+    let bass_alpha: f32 = (2.0 * std::f32::consts::PI * bass_cutoff_hz)
+        / (fs + 2.0 * std::f32::consts::PI * bass_cutoff_hz);
+    let mut bass_lp_l: f32 = 0.0;
+    let mut bass_lp_r: f32 = 0.0;
+
     // Reader task: continuously read PCM frames from ffmpeg.
     // On EOF or error, it will stop sending and close the channel.
     let reader_cancel = cancel.clone();
@@ -1063,32 +1209,17 @@ async fn playback_loop(
 
     let mut pcm_buf: VecDeque<Vec<u8>> = VecDeque::new();
 
-    if let Ok(Some(frame)) = tokio::time::timeout(Duration::from_secs(5), pcm_rx.recv()).await {
-        if frame.len() == frame_bytes {
-            pcm_buf.push_back(frame);
-            logged_first_pcm = true;
-            info!(source_url = %source_url, first_pcm_ms = %playback_started.elapsed().as_millis(), "first pcm frame received");
-        }
-    } else {
-        return Err(anyhow!("no pcm received from ffmpeg"));
-    }
-
-    while pcm_buf.len() < 5 {
-        match tokio::time::timeout(Duration::from_millis(50), pcm_rx.recv()).await {
-            Ok(Some(frame)) => {
-                if frame.len() == frame_bytes {
-                    pcm_buf.push_back(frame);
-                }
-            }
-            _ => break,
-        }
-    }
+    let prebuffer_target: usize = 5;
+    let mut prebuffering = true;
 
     let mut last_tick = Instant::now();
     let mut tick_jitter_max_ms: u128 = 0;
     let mut clipped_samples: u64 = 0;
     let mut max_abs_sample: f32 = 0.0;
     let mut diag_next = Instant::now() + Duration::from_secs(5);
+
+    let fade_total_samples_per_channel: usize = 48000 / 1000 * 80;
+    let mut fade_pos_samples_per_channel: usize = 0;
 
     'main: loop {
         if cancel.is_cancelled() {
@@ -1111,6 +1242,25 @@ async fn playback_loop(
             _ = ticker.tick() => {}
         }
 
+        while let Ok(frame) = pcm_rx.try_recv() {
+            if frame.len() == frame_bytes {
+                pcm_buf.push_back(frame);
+            }
+        }
+
+        if !logged_first_pcm {
+            if !pcm_buf.is_empty() {
+                logged_first_pcm = true;
+                info!(source_url = %source_url, first_pcm_ms = %playback_started.elapsed().as_millis(), "first pcm frame received");
+            } else if playback_started.elapsed() >= Duration::from_secs(5) {
+                return Err(anyhow!("no pcm received from ffmpeg"));
+            }
+        }
+
+        if prebuffering {
+            prebuffering = pcm_buf.len() < prebuffer_target;
+        }
+
         let now = Instant::now();
         let dt = now.duration_since(last_tick);
         last_tick = now;
@@ -1122,37 +1272,25 @@ async fn playback_loop(
         // Prefer real PCM frame; fall back to silence to keep cadence stable.
         // Allow a tiny wait to reduce false underruns when the PCM frame arrives slightly after the tick.
         let mut got_real_frame = false;
-        if let Some(frame) = pcm_buf.pop_front() {
-            if frame.len() == frame_bytes {
-                pcm.copy_from_slice(&frame);
-                got_real_frame = true;
-            }
-        } else {
-            match pcm_rx.try_recv() {
-                Ok(frame) => {
-                    if frame.len() == frame_bytes {
-                        pcm.copy_from_slice(&frame);
-                        got_real_frame = true;
-                    }
+        if !prebuffering {
+            if let Some(frame) = pcm_buf.pop_front() {
+                if frame.len() == frame_bytes {
+                    pcm.copy_from_slice(&frame);
+                    got_real_frame = true;
                 }
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                    match tokio::time::timeout(Duration::from_millis(3), pcm_rx.recv()).await {
-                        Ok(Some(frame)) => {
-                            if frame.len() == frame_bytes {
-                                pcm.copy_from_slice(&frame);
-                                got_real_frame = true;
-                            }
+            } else {
+                match tokio::time::timeout(Duration::from_millis(3), pcm_rx.recv()).await {
+                    Ok(Some(frame)) => {
+                        if frame.len() == frame_bytes {
+                            pcm.copy_from_slice(&frame);
+                            got_real_frame = true;
                         }
-                        Ok(None) => {
-                            // ffmpeg finished / failed. Stop playback.
-                            break;
-                        }
-                        Err(_) => {}
                     }
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    // ffmpeg finished / failed. Stop playback.
-                    break;
+                    Ok(None) => {
+                        // ffmpeg finished / failed. Stop playback.
+                        break;
+                    }
+                    Err(_) => {}
                 }
             }
         }
@@ -1180,11 +1318,18 @@ async fn playback_loop(
             info!(underruns_total = %underruns_total, "playback underrun (sending silence frames to keep cadence)");
         }
 
-        let (vol, fx_pan, fx_width, fx_swap_lr) = {
+        let (vol, fx_pan, fx_width, fx_swap_lr, fx_bass_db, fx_reverb_mix) = {
             let st = status.lock().await;
             let r = (st.volume_percent as f32 / 100.0).clamp(0.0, 2.0);
             let vol = if r <= 1.0 { r.powf(1.6) } else { r };
-            (vol, st.fx_pan.clamp(-1.0, 1.0), st.fx_width.clamp(0.0, 3.0), st.fx_swap_lr)
+            (
+                vol,
+                st.fx_pan.clamp(-1.0, 1.0),
+                st.fx_width.clamp(0.0, 3.0),
+                st.fx_swap_lr,
+                st.fx_bass_db.clamp(0.0, 18.0),
+                st.fx_reverb_mix.clamp(0.0, 1.0),
+            )
         };
 
         for i in 0..(frame_samples_per_channel * channels) {
@@ -1193,6 +1338,41 @@ async fn playback_loop(
             let s = i16::from_le_bytes([lo, hi]) as f32;
             let v = (s / 32768.0) * vol;
             float_buf[i] = v;
+        }
+
+        if got_real_frame && fade_pos_samples_per_channel < fade_total_samples_per_channel {
+            let denom = fade_total_samples_per_channel as f32;
+            for i in 0..frame_samples_per_channel {
+                let s = fade_pos_samples_per_channel + i;
+                let g = ((s as f32) / denom).clamp(0.0, 1.0);
+                let idx = i * 2;
+                float_buf[idx] *= g;
+                float_buf[idx + 1] *= g;
+            }
+            fade_pos_samples_per_channel = (fade_pos_samples_per_channel + frame_samples_per_channel)
+                .min(fade_total_samples_per_channel);
+        }
+
+        let bass_gain = 10.0_f32.powf(fx_bass_db / 20.0);
+        if (bass_gain - 1.0).abs() > 0.0001 || fx_reverb_mix > 0.0001 {
+            for i in 0..frame_samples_per_channel {
+                let idx = i * 2;
+                let mut l = float_buf[idx];
+                let mut r = float_buf[idx + 1];
+
+                if (bass_gain - 1.0).abs() > 0.0001 {
+                    bass_lp_l += bass_alpha * (l - bass_lp_l);
+                    bass_lp_r += bass_alpha * (r - bass_lp_r);
+                    let low_l = bass_lp_l;
+                    let low_r = bass_lp_r;
+                    l = (l - low_l) + low_l * bass_gain;
+                    r = (r - low_r) + low_r * bass_gain;
+                }
+
+                let (l2, r2) = reverb.process_stereo(l, r, fx_reverb_mix);
+                float_buf[idx] = l2;
+                float_buf[idx + 1] = r2;
+            }
         }
 
         // Apply FX on interleaved stereo: swap, width (mid/side), then pan (balance).
@@ -1337,21 +1517,88 @@ async fn main() -> Result<()> {
         })
     };
 
+    let persist_file = resolve_repo_relative(&get_env("TSBOT_VOICE_STATE_FILE", "./logs/voice_state.json"));
+
+    let mut init_status = SharedStatus {
+        state: 1, // STATE_IDLE
+        now_playing_title: String::new(),
+        now_playing_source_url: String::new(),
+        volume_percent: 100,
+        fx_pan: 0.0,
+        fx_width: 1.0,
+        fx_swap_lr: false,
+        fx_bass_db: 0.0,
+        fx_reverb_mix: 0.0,
+    };
+
+    if let Some(ps) = load_persisted_voice_state(&persist_file) {
+        init_status.volume_percent = ps.volume_percent.clamp(0, 200);
+        init_status.fx_pan = ps.fx_pan.clamp(-1.0, 1.0);
+        init_status.fx_width = ps.fx_width.clamp(0.0, 3.0);
+        init_status.fx_swap_lr = ps.fx_swap_lr;
+        init_status.fx_bass_db = ps.fx_bass_db.clamp(0.0, 18.0);
+        init_status.fx_reverb_mix = ps.fx_reverb_mix.clamp(0.0, 1.0);
+    }
+
+    let (persist_tx, mut persist_rx) = mpsc::channel::<PersistedVoiceState>(32);
+    {
+        let persist_file = persist_file.clone();
+        tokio::spawn(async move {
+            let mut pending: Option<PersistedVoiceState> = None;
+            let mut debounce: Option<Pin<Box<tokio::time::Sleep>>> = None;
+
+            loop {
+                tokio::select! {
+                    r = persist_rx.recv() => {
+                        match r {
+                            Some(st) => {
+                                pending = Some(st);
+                                debounce = Some(Box::pin(tokio::time::sleep(Duration::from_millis(200))));
+                            }
+                            None => {
+                                break;
+                            }
+                        }
+                    }
+                    _ = async {
+                        if let Some(t) = debounce.as_mut() {
+                            t.as_mut().await;
+                        } else {
+                            futures::future::pending::<()>().await;
+                        }
+                    } => {
+                        if let Some(st) = pending.take() {
+                            debounce = None;
+                            if let Some(parent) = persist_file.parent() {
+                                let _ = tokio::fs::create_dir_all(parent).await;
+                            }
+                            if let Ok(s) = serde_json::to_string_pretty(&st) {
+                                let _ = tokio::fs::write(&persist_file, s).await;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(st) = pending.take() {
+                if let Some(parent) = persist_file.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                if let Ok(s) = serde_json::to_string_pretty(&st) {
+                    let _ = tokio::fs::write(&persist_file, s).await;
+                }
+            }
+        });
+    }
+
     let svc = VoiceServiceImpl {
-        status: Arc::new(Mutex::new(SharedStatus {
-            state: 1, // STATE_IDLE
-            now_playing_title: String::new(),
-            now_playing_source_url: String::new(),
-            volume_percent: 100,
-            fx_pan: 0.0,
-            fx_width: 1.0,
-            fx_swap_lr: false,
-        })),
+        status: Arc::new(Mutex::new(init_status)),
         playback: Arc::new(Mutex::new(None)),
         ts3_audio_tx,
         ts3_notice_tx,
         ts3_cmd_tx,
         events_tx,
+        persist_tx,
     };
 
     let addr: std::net::SocketAddr = addr.parse()?;

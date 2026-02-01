@@ -222,6 +222,7 @@ import {
 import { apiGet, apiPost, apiDelete } from '../api'
 import LoadingSpinner from './LoadingSpinner.vue'
 import EmptyState from './EmptyState.vue'
+import { isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 
 interface Track {
   id: number
@@ -261,12 +262,19 @@ async function loadTracks() {
   
   try {
     const next = await apiGet<Track[]>('/queue')
-    applyQueueUpdate(next)
+    applyQueueUpdate(markQueueFavorites(next))
   } catch (e: any) {
     error.value = String(e?.message ?? e)
   } finally {
     loading.value = false
   }
+}
+
+function markQueueFavorites(list: Track[]): Track[] {
+  return list.map((t) => ({
+    ...t,
+    isLiked: isFavoriteSong(t.id),
+  }))
 }
 
 function applyQueueUpdate(next: Track[]) {
@@ -292,7 +300,7 @@ function applyQueueUpdate(next: Track[]) {
 async function refreshTracksSilently() {
   try {
     const next = await apiGet<Track[]>('/queue')
-    applyQueueUpdate(next)
+    applyQueueUpdate(markQueueFavorites(next))
   } catch {
     // ignore
   }
@@ -340,16 +348,17 @@ async function deleteSelected() {
 
 // Toggle track like status
 async function toggleLike(track: Track) {
-  try {
-    if (track.isLiked) {
-      await apiPost(`/likes/${track.id}/remove`, {})
-    } else {
-      await apiPost(`/likes/${track.id}/add`, {})
-    }
-    track.isLiked = !track.isLiked
-  } catch (e: any) {
-    error.value = String(e?.message ?? e)
-  }
+  const liked = toggleFavoriteSong({
+    id: track.id,
+    name: track.title,
+    ar: [{ name: track.artist }],
+    al: {
+      name: track.album,
+      picUrl: track.artwork,
+    },
+    duration: track.duration ? Number(track.duration) * 1000 : undefined,
+  })
+  track.isLiked = liked
 }
 
 // Handle drag end - reorder tracks

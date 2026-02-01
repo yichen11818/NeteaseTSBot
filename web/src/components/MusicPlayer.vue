@@ -183,6 +183,38 @@
             <div class="space-y-4">
               <div>
                 <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+                  <div>低音 (dB)</div>
+                  <div class="font-mono tabular-nums">{{ fxBassDb.toFixed(1) }}</div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="18"
+                  step="0.1"
+                  :value="fxBassDb"
+                  class="w-full"
+                  @input="onFxBassDbInput(($event.target as HTMLInputElement).valueAsNumber)"
+                />
+              </div>
+
+              <div>
+                <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+                  <div>混响</div>
+                  <div class="font-mono tabular-nums">{{ fxReverbMix.toFixed(2) }}</div>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  :value="fxReverbMix"
+                  class="w-full"
+                  @input="onFxReverbMixInput(($event.target as HTMLInputElement).valueAsNumber)"
+                />
+              </div>
+
+              <div>
+                <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
                   <div>声像 (L/R)</div>
                   <div class="font-mono tabular-nums">{{ fxPan.toFixed(2) }}</div>
                 </div>
@@ -259,6 +291,7 @@ import {
   Maximize2
 } from 'lucide-vue-next'
 import { apiGet, apiPost, apiPut } from '../api'
+import { isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 
 const router = useRouter()
 
@@ -307,8 +340,10 @@ const fxLoading = ref(false)
 const fxPan = ref(0)
 const fxWidth = ref(1)
 const fxSwapLr = ref(false)
+const fxBassDb = ref(0)
+const fxReverbMix = ref(0)
 let fxDebounceTimer: number | null = null
-let fxPending: { pan?: number; width?: number; swap_lr?: boolean } = {}
+let fxPending: { pan?: number; width?: number; swap_lr?: boolean; bass_db?: number; reverb_mix?: number } = {}
 let timer: number | null = null
 let pollInterval = 1000 // Dynamic polling interval
 let lastUpdateTime = 0
@@ -363,6 +398,8 @@ async function loadFx() {
     fxPan.value = Number(fx?.pan ?? 0)
     fxWidth.value = Number(fx?.width ?? 1)
     fxSwapLr.value = Boolean(fx?.swap_lr ?? false)
+    fxBassDb.value = Number(fx?.bass_db ?? 0)
+    fxReverbMix.value = Number(fx?.reverb_mix ?? 0)
   } catch (e: any) {
     showError(String(e?.message ?? e))
   } finally {
@@ -370,7 +407,7 @@ async function loadFx() {
   }
 }
 
-async function pushFx(update: { pan?: number; width?: number; swap_lr?: boolean }) {
+async function pushFx(update: { pan?: number; width?: number; swap_lr?: boolean; bass_db?: number; reverb_mix?: number }) {
   try {
     await apiPut('/voice/fx', update)
   } catch (e: any) {
@@ -378,7 +415,7 @@ async function pushFx(update: { pan?: number; width?: number; swap_lr?: boolean 
   }
 }
 
-function scheduleFxUpdate(update: { pan?: number; width?: number; swap_lr?: boolean }) {
+function scheduleFxUpdate(update: { pan?: number; width?: number; swap_lr?: boolean; bass_db?: number; reverb_mix?: number }) {
   fxPending = { ...fxPending, ...update }
   if (fxDebounceTimer) {
     window.clearTimeout(fxDebounceTimer)
@@ -388,7 +425,7 @@ function scheduleFxUpdate(update: { pan?: number; width?: number; swap_lr?: bool
     fxPending = {}
     fxDebounceTimer = null
     void pushFx(payload)
-  }, 150)
+  }, 50)
 }
 
 function onFxPanInput(v: number) {
@@ -406,6 +443,16 @@ function onFxSwapChange(v: boolean) {
   scheduleFxUpdate({ swap_lr: v })
 }
 
+function onFxBassDbInput(v: number) {
+  fxBassDb.value = v
+  scheduleFxUpdate({ bass_db: v })
+}
+
+function onFxReverbMixInput(v: number) {
+  fxReverbMix.value = v
+  scheduleFxUpdate({ reverb_mix: v })
+}
+
 async function reloadFx() {
   await loadFx()
 }
@@ -414,7 +461,9 @@ async function resetFx() {
   fxPan.value = 0
   fxWidth.value = 1
   fxSwapLr.value = false
-  await pushFx({ pan: 0, width: 1, swap_lr: false })
+  fxBassDb.value = 0
+  fxReverbMix.value = 0
+  await pushFx({ pan: 0, width: 1, swap_lr: false, bass_db: 0, reverb_mix: 0 })
 }
 
 async function skipForward() {
@@ -538,17 +587,16 @@ async function loadQueue() {
 
 async function toggleLike() {
   if (!currentTrack.value) return
-  try {
-    if (isLiked.value) {
-      await apiPost(`/likes/${currentTrack.value.id}/remove`, {})
-    } else {
-      await apiPost(`/likes/${currentTrack.value.id}/add`, {})
-    }
-    isLiked.value = !isLiked.value
-  } catch (e: any) {
-    error.value = String(e?.message ?? e)
-    setTimeout(() => error.value = '', 3000)
-  }
+  const liked = toggleFavoriteSong({
+    id: currentTrack.value.id,
+    name: currentTrack.value.title,
+    ar: [{ name: currentTrack.value.artist }],
+    al: {
+      name: currentTrack.value.album,
+      picUrl: currentTrack.value.artwork,
+    },
+  })
+  isLiked.value = liked
 }
 
 // Load current player state with adaptive polling
@@ -566,15 +614,14 @@ async function loadPlayerState() {
     playerState.value.isShuffled = Boolean(state.is_shuffled ?? false)
     playerState.value.repeatMode = state.repeat_mode ?? 'none'
     
-    // Check if track changed to update liked status
-    if (state.track_id && state.track_id !== currentTrack.value?.id) {
-      // Need to check liked status for new track if we had an API for it
-      // For now we just reset it or keep it as is if we can't check
-      isLiked.value = false // Default to false or maybe check if we can get this info
-      
+    // Check if track changed to update local like status
+    const nextTrackId = Number(state.track_id || 0)
+    if (nextTrackId && nextTrackId !== currentTrack.value?.id) {
+      isLiked.value = isFavoriteSong(nextTrackId)
+
       // Update current track index when track changes
       if (queue.value.length > 0) {
-        currentTrackIndex.value = queue.value.findIndex(t => t.id === state.track_id)
+        currentTrackIndex.value = queue.value.findIndex(t => t.id === nextTrackId)
       }
     }
 
@@ -586,6 +633,8 @@ async function loadPlayerState() {
         album: state.now_playing_album,
         artwork: state.artwork_url
       }
+
+      isLiked.value = isFavoriteSong(Number(currentTrack.value.id || 0))
     }
     
     // Handle track end and repeat logic

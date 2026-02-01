@@ -84,6 +84,8 @@ class AudioFxUpdateRequest(BaseModel):
     pan: float | None = None
     width: float | None = None
     swap_lr: bool | None = None
+    bass_db: float | None = None
+    reverb_mix: float | None = None
 
 
 class AdminCookieSetRequest(BaseModel):
@@ -569,18 +571,28 @@ async def get_voice_fx() -> dict:
         "pan": fx.pan,
         "width": fx.width,
         "swap_lr": fx.swap_lr,
+        "bass_db": fx.bass_db,
+        "reverb_mix": fx.reverb_mix,
     }
 
 
 @app.put("/voice/fx")
 async def set_voice_fx(req: AudioFxUpdateRequest) -> dict:
-    await voice.set_audio_fx(pan=req.pan, width=req.width, swap_lr=req.swap_lr)
+    await voice.set_audio_fx(
+        pan=req.pan,
+        width=req.width,
+        swap_lr=req.swap_lr,
+        bass_db=req.bass_db,
+        reverb_mix=req.reverb_mix,
+    )
     fx = await voice.get_audio_fx()
     return {
         "ok": True,
         "pan": fx.pan,
         "width": fx.width,
         "swap_lr": fx.swap_lr,
+        "bass_db": fx.bass_db,
+        "reverb_mix": fx.reverb_mix,
     }
 
 
@@ -1123,7 +1135,7 @@ def _format_help() -> str:
         "暂停|pause / 恢复|resume / 停止|stop / 跳过|skip\n"
         "音量|vol <0-200> - set volume\n"
         "音效|fx - show audio fx\n"
-        "fx pan <-1..1> / fx width <0..3> / fx swap <on|off> / fx reset"
+        "fx pan <-1..1> / fx width <0..3> / fx swap <on|off> / fx bass <0..18> / fx reverb <0..1> / fx reset"
     )
 
 
@@ -1419,8 +1431,8 @@ async def _handle_chat_command(invoker_name: str, message: str, *, target_mode: 
             if not arg:
                 fx = await voice.get_audio_fx()
                 await reply(
-                    f"音效: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)}\n"
-                    "用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx reset"
+                    f"音效: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)} bass_db={fx.bass_db:.1f} reverb_mix={fx.reverb_mix:.2f}\n"
+                    "用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx bass <0..18> | fx reverb <0..1> | fx reset"
                 )
                 return
 
@@ -1428,13 +1440,15 @@ async def _handle_chat_command(invoker_name: str, message: str, *, target_mode: 
             sub = (parts[0] if parts else "").strip().lower()
 
             if sub == "reset":
-                await voice.set_audio_fx(pan=0.0, width=1.0, swap_lr=False)
+                await voice.set_audio_fx(pan=0.0, width=1.0, swap_lr=False, bass_db=0.0, reverb_mix=0.0)
                 fx = await voice.get_audio_fx()
-                await reply(f"已重置音效: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)}")
+                await reply(
+                    f"已重置音效: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)} bass_db={fx.bass_db:.1f} reverb_mix={fx.reverb_mix:.2f}"
+                )
                 return
 
             if len(parts) < 2:
-                await reply("用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx reset")
+                await reply("用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx bass <0..18> | fx reverb <0..1> | fx reset")
                 return
 
             val = parts[1].strip().lower()
@@ -1459,12 +1473,28 @@ async def _handle_chat_command(invoker_name: str, message: str, *, target_mode: 
                     await reply("用法: fx swap <on|off>")
                     return
                 await voice.set_audio_fx(swap_lr=bool(on))
+            elif sub == "bass":
+                try:
+                    b = float(val)
+                except ValueError:
+                    await reply("用法: fx bass <0..18>")
+                    return
+                await voice.set_audio_fx(bass_db=max(0.0, min(18.0, b)))
+            elif sub == "reverb":
+                try:
+                    m = float(val)
+                except ValueError:
+                    await reply("用法: fx reverb <0..1>")
+                    return
+                await voice.set_audio_fx(reverb_mix=max(0.0, min(1.0, m)))
             else:
-                await reply("用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx reset")
+                await reply("用法: fx pan <-1..1> | fx width <0..3> | fx swap <on|off> | fx bass <0..18> | fx reverb <0..1> | fx reset")
                 return
 
             fx = await voice.get_audio_fx()
-            await reply(f"音效已更新: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)}")
+            await reply(
+                f"音效已更新: pan={fx.pan:.2f} width={fx.width:.2f} swap_lr={int(fx.swap_lr)} bass_db={fx.bass_db:.1f} reverb_mix={fx.reverb_mix:.2f}"
+            )
             return
 
         if cmd == "desc":
