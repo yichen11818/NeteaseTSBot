@@ -53,9 +53,11 @@ cd ..
 sudo apt update
 sudo apt install cmake build-essential
 
-# 如果使用 Rust 版本
+# 安装 Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
+
+
 ```
 
 ### 4. 构建项目

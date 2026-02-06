@@ -137,30 +137,44 @@ watch(currentLineIndex, () => {
 function getLineStyle(index: number) {
   const isCurrent = index === currentLineIndex.value
   const isPast = index < currentLineIndex.value
+  const isNext = index === currentLineIndex.value + 1
   
   if (theme.value === 'apple-music') {
     if (isCurrent) {
       return {
-        textShadow: '0 0 40px rgba(255,255,255,0.4), 0 0 80px rgba(255,255,255,0.2)',
+        textShadow: '0 0 40px rgba(255,255,255,0.6), 0 0 80px rgba(255,255,255,0.3), 0 4px 8px rgba(0,0,0,0.3)',
         fontWeight: '700',
-        letterSpacing: '-0.02em'
+        letterSpacing: '-0.02em',
+        animation: 'glow 2s ease-in-out infinite alternate'
       }
     } else if (isPast) {
       return {
-        fontWeight: '400'
+        fontWeight: '400',
+        opacity: '0.4',
+        filter: 'blur(0.5px)'
+      }
+    } else if (isNext) {
+      return {
+        fontWeight: '600',
+        opacity: '0.8',
+        textShadow: '0 0 20px rgba(255,255,255,0.2)'
       }
     } else {
       return {
-        fontWeight: '500'
+        fontWeight: '500',
+        opacity: '0.6'
       }
     }
   } else if (theme.value === 'dark') {
     return {
-      textShadow: isCurrent ? '0 0 20px rgba(255,255,255,0.3)' : 'none'
+      textShadow: isCurrent ? '0 0 30px rgba(255,255,255,0.5), 0 0 60px rgba(255,255,255,0.3)' : 'none',
+      animation: isCurrent ? 'pulse-dark 1.5s ease-in-out infinite' : 'none'
     }
   }
   
-  return {}
+  return {
+    animation: isCurrent ? 'pulse-light 1.5s ease-in-out infinite' : 'none'
+  }
 }
 </script>
 
@@ -218,32 +232,33 @@ function getLineStyle(index: number) {
             v-for="(line, index) in lyrics"
             :key="index"
             :class="[
-              'transition-all duration-700 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] leading-snug cursor-pointer origin-center',
+              'transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] leading-snug cursor-pointer origin-center',
+              'hover:duration-300',
               theme === 'apple-music'
                 ? [
                     'text-center font-semibold tracking-wide text-xl md:text-3xl',
                     index === currentLineIndex
-                      ? 'text-white opacity-100 transform scale-110 blur-none drop-shadow-[0_0_15px_rgba(255,255,255,0.15)]'
+                      ? 'text-white opacity-100 transform scale-110 blur-none drop-shadow-[0_0_20px_rgba(255,255,255,0.25)] animate-in fade-in slide-in-from-bottom-2 duration-500'
                       : index < currentLineIndex
-                      ? 'text-white/40 opacity-40 transform scale-95 blur-[0.5px]'
-                      : 'text-white/60 opacity-60 transform scale-95 blur-[0.5px]'
+                      ? 'text-white/40 opacity-30 transform scale-95 blur-[0.8px] translate-y-1'
+                      : 'text-white/70 opacity-70 transform scale-98 blur-[0.3px] translate-y-0 hover:scale-100 hover:opacity-80'
                   ]
                 : theme === 'dark'
                 ? [
-                    'text-center hover:scale-[1.02]',
+                    'text-center hover:scale-[1.02] hover:duration-200',
                     index === currentLineIndex
-                      ? 'text-white font-bold text-2xl lg:text-3xl scale-110 drop-shadow-lg transform translate-y-0 opacity-100'
+                      ? 'text-white font-bold text-2xl lg:text-3xl scale-110 drop-shadow-[0_8px_16px_rgba(0,0,0,0.4)] transform translate-y-0 opacity-100 animate-pulse'
                       : index < currentLineIndex
-                      ? 'text-white/30 text-lg lg:text-xl opacity-60 transform translate-y-1'
-                      : 'text-white/60 text-lg lg:text-xl opacity-80 transform translate-y-0'
+                      ? 'text-white/20 text-lg lg:text-xl opacity-50 transform translate-y-2 scale-95'
+                      : 'text-white/60 text-lg lg:text-xl opacity-70 transform translate-y-0 hover:scale-105 hover:text-white/80'
                   ]
                 : [
-                    'text-center hover:scale-[1.02]',
+                    'text-center hover:scale-[1.02] hover:duration-200',
                     index === currentLineIndex
-                      ? 'text-blue-600 font-bold text-2xl scale-110'
+                      ? 'text-blue-600 font-bold text-2xl scale-110 drop-shadow-[0_4px_8px_rgba(59,130,246,0.3)] animate-bounce'
                       : index < currentLineIndex
-                      ? 'text-gray-400 text-lg opacity-60'
-                      : 'text-gray-600 text-lg opacity-80'
+                      ? 'text-gray-300 text-lg opacity-60 transform translate-y-1'
+                      : 'text-gray-600 text-lg opacity-80 hover:scale-105 hover:text-blue-500'
                   ]
             ]"
             :style="getLineStyle(index)"
@@ -270,5 +285,72 @@ function getLineStyle(index: number) {
 
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/* Custom animations */
+@keyframes glow {
+  0% {
+    filter: brightness(1) drop-shadow(0 0 20px rgba(255,255,255,0.3));
+  }
+  100% {
+    filter: brightness(1.2) drop-shadow(0 0 40px rgba(255,255,255,0.6));
+  }
+}
+
+@keyframes pulse-dark {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.02);
+  }
+}
+
+@keyframes pulse-light {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.01);
+  }
+}
+
+/* Enhanced transitions */
+.lyric-line-enter-active,
+.lyric-line-leave-active {
+  transition: all 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.lyric-line-enter-from {
+  opacity: 0;
+  transform: translateY(20px) scale(0.9);
+}
+
+.lyric-line-leave-to {
+  opacity: 0;
+  transform: translateY(-20px) scale(0.9);
+}
+
+/* Hover effects */
+.lyric-line:hover {
+  transition: all 0.3s ease;
+}
+
+/* Current line emphasis */
+.current-line {
+  animation: currentLineGlow 2s ease-in-out infinite;
+}
+
+@keyframes currentLineGlow {
+  0%, 100% {
+    text-shadow: 0 0 20px currentColor, 0 0 40px currentColor;
+  }
+  50% {
+    text-shadow: 0 0 30px currentColor, 0 0 60px currentColor, 0 0 80px currentColor;
+  }
 }
 </style>

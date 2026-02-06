@@ -185,10 +185,23 @@ onUnmounted(() => {
     <!-- Gradient Overlay: Shows color at top, fades to solid black at bottom -->
     <div class="absolute inset-0 bg-gradient-to-b from-black/10 via-black/40 to-black"></div>
     
-    <!-- Animated background particles (subtle) -->
-    <div class="absolute inset-0 overflow-hidden opacity-30 pointer-events-none">
-      <div class="absolute top-1/4 left-1/4 w-[500px] h-[500px] bg-primary-500/20 rounded-full blur-[100px] animate-pulse"></div>
-      <div class="absolute bottom-1/3 right-1/3 w-[400px] h-[400px] bg-purple-500/20 rounded-full blur-[100px] animate-pulse" style="animation-delay: 2s;"></div>
+    <!-- Animated background particles (enhanced) -->
+    <div class="absolute inset-0 overflow-hidden opacity-40 pointer-events-none">
+      <!-- Large floating orbs -->
+      <div class="absolute top-1/4 left-1/4 w-[600px] h-[600px] bg-gradient-to-r from-blue-500/30 to-purple-500/30 rounded-full blur-[120px] animate-pulse"></div>
+      <div class="absolute bottom-1/3 right-1/3 w-[500px] h-[500px] bg-gradient-to-r from-pink-500/30 to-orange-500/30 rounded-full blur-[100px] animate-pulse" style="animation-delay: 2s;"></div>
+      <div class="absolute top-1/2 right-1/4 w-[400px] h-[400px] bg-gradient-to-r from-green-500/20 to-teal-500/20 rounded-full blur-[80px] animate-pulse" style="animation-delay: 4s;"></div>
+      
+      <!-- Small floating particles -->
+      <div class="absolute top-1/3 left-1/2 w-20 h-20 bg-white/10 rounded-full blur-sm animate-bounce" style="animation-duration: 3s;"></div>
+      <div class="absolute bottom-1/4 left-1/3 w-16 h-16 bg-white/8 rounded-full blur-sm animate-bounce" style="animation-duration: 4s; animation-delay: 1s;"></div>
+      <div class="absolute top-2/3 right-1/2 w-24 h-24 bg-white/12 rounded-full blur-sm animate-bounce" style="animation-duration: 3.5s; animation-delay: 2s;"></div>
+      
+      <!-- Moving light beams -->
+      <div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-pulse"></div>
+      <div class="absolute bottom-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-white/15 to-transparent animate-pulse" style="animation-delay: 1s;"></div>
+      <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-transparent via-white/10 to-transparent animate-pulse" style="animation-delay: 0.5s;"></div>
+      <div class="absolute top-0 right-0 w-1 h-full bg-gradient-to-b from-transparent via-white/10 to-transparent animate-pulse" style="animation-delay: 1.5s;"></div>
     </div>
 
     <div class="relative h-full flex flex-col z-10">

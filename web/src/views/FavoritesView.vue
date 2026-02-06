@@ -7,6 +7,7 @@ import {
   ListMusic,
   Trash2,
   Play,
+  Plus,
 } from 'lucide-vue-next'
 import EmptyState from '../components/EmptyState.vue'
 import { apiPost } from '../api'
@@ -62,6 +63,22 @@ async function playSong(song: FavoriteSong) {
     const msg = String(e?.message ?? e)
     error.value = msg
     alert(`点歌失败: ${msg}`)
+  }
+}
+
+async function addToQueue(song: FavoriteSong) {
+  try {
+    const artist = (song.ar || []).map((a) => a.name).join(', ')
+    await apiPost('/queue/netease', {
+      song_id: String(song.id),
+      title: song.name,
+      artist,
+      play_now: false,
+    })
+  } catch (e: any) {
+    const msg = String(e?.message ?? e)
+    error.value = msg
+    alert(`添加到队列失败: ${msg}`)
   }
 }
 
@@ -187,6 +204,14 @@ onMounted(refresh)
                 </td>
                 <td class="px-3 md:px-6 py-3 md:py-4 text-right">
                   <div class="flex items-center justify-end gap-2 md:opacity-0 group-hover:opacity-100 transition-all duration-200">
+                    <button
+                      class="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                      title="添加到队列"
+                      @click="addToQueue(song)"
+                    >
+                      <Plus :size="18" />
+                    </button>
+
                     <button
                       class="p-2 text-gray-400 hover:text-pink-600 hover:bg-pink-50 rounded-lg transition-colors"
                       title="立即播放"

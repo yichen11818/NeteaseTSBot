@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host: (env.VITE_DEV_HOST || '127.0.0.1').trim(),
       port: parseInt(env.VITE_DEV_PORT || '5173'),
+      allowedHosts: ['wyy.infam.top', 'infam.top', '.infam.top'],
     },
   }
 })

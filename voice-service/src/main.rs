@@ -11,7 +11,8 @@ use anyhow::{anyhow, Result};
 use audiopus::coder::Encoder;
 use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, watch, Mutex};
 use tokio_stream::wrappers::{BroadcastStream, TcpListenerStream};
 use tokio_util::sync::CancellationToken;
@@ -373,6 +374,9 @@ impl VoiceService for VoiceServiceImpl {
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
         let r = req.into_inner();
         let desc = r.description;
+        let msg = format!("set client_description requested (len={})", desc.len());
+        emit_log(&self.events_tx, 2, msg.clone());
+        info!("{msg}");
         if desc.len() > 700 {
             return Ok(Response::new(voicev1::CommandResponse {
                 ok: false,
@@ -380,9 +384,46 @@ impl VoiceService for VoiceServiceImpl {
             }));
         }
 
+        let cleaned = desc.replace(['\r', '\n', '\t'], " ");
+        let compact = cleaned
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let encoded = ts3_escape_value(&compact);
+
+        if encoded.len() != desc.len() {
+            info!(
+                "client_description encoded: orig_len={} encoded_len={}",
+                desc.len(),
+                encoded.len()
+            );
+        }
+
+        if let Some(cfg) = ServerQueryConfig::from_env() {
+            let nickname = get_env("TSBOT_TS3_NICKNAME", "tsbot");
+            match serverquery_set_client_description(&cfg, &nickname, &encoded).await {
+                Ok(()) => {
+                    return Ok(Response::new(voicev1::CommandResponse {
+                        ok: true,
+                        message: "ok".to_string(),
+                    }));
+                }
+                Err(e) => {
+                    let msg = format!("serverquery set description failed: {e}");
+                    emit_log(&self.events_tx, 3, msg.clone());
+                    warn!("{msg}");
+                    return Ok(Response::new(voicev1::CommandResponse {
+                        ok: false,
+                        message: msg,
+                    }));
+                }
+            }
+        }
+
         // Send a raw TS3 command: clientupdate client_description=...
         let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientupdate");
-        cmd.write_arg("client_description", &desc);
+        cmd.write_arg("client_description", &encoded);
 
         self.ts3_cmd_tx
             .send(cmd)
@@ -601,6 +642,195 @@ fn get_env(key: &str, def: &str) -> String {
         }
         Err(_) => def.to_string(),
     }
+}
+
+#[derive(Clone, Debug)]
+struct ServerQueryConfig {
+    host: String,
+    port: String,
+    user: String,
+    password: String,
+    sid: String,
+    use_port: String,
+}
+
+impl ServerQueryConfig {
+    fn from_env() -> Option<Self> {
+        let user = get_env("TSBOT_TS3_SERVERQUERY_USER", "");
+        let password = get_env("TSBOT_TS3_SERVERQUERY_PASSWORD", "");
+        if user.is_empty() || password.is_empty() {
+            return None;
+        }
+
+        let def_host = get_env("TSBOT_TS3_HOST", "127.0.0.1");
+        let host = get_env("TSBOT_TS3_SERVERQUERY_HOST", &def_host);
+
+        let port = get_env("TSBOT_TS3_SERVERQUERY_PORT", "10011");
+        let port = port.trim_start_matches(':').to_string();
+
+        let sid = get_env("TSBOT_TS3_SERVERQUERY_SID", "");
+        let use_port = get_env("TSBOT_TS3_SERVERQUERY_USE_PORT", "");
+        let use_port = if use_port.is_empty() {
+            get_env("TSBOT_TS3_PORT", "9987")
+        } else {
+            use_port
+        };
+        let use_port = use_port.trim_start_matches(':').to_string();
+
+        Some(Self {
+            host,
+            port,
+            user,
+            password,
+            sid,
+            use_port,
+        })
+    }
+}
+
+fn ts3_escape_value(s: &str) -> String {
+    let mut encoded = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => encoded.push_str("\\\\"),
+            ' ' => encoded.push_str("\\s"),
+            '|' => encoded.push_str("\\p"),
+            '/' => encoded.push_str("\\/"),
+            '\n' => encoded.push_str("\\n"),
+            '\r' => encoded.push_str("\\r"),
+            '\t' => encoded.push_str("\\t"),
+            _ => encoded.push(ch),
+        }
+    }
+    encoded
+}
+
+async fn serverquery_set_client_description(
+    cfg: &ServerQueryConfig,
+    nickname: &str,
+    encoded_desc: &str,
+) -> std::result::Result<(), String> {
+    let addr = format!("{}:{}", cfg.host, cfg.port);
+    let stream = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+        .await
+        .map_err(|_| "connect timeout".to_string())?
+        .map_err(|e| e.to_string())?;
+
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    for _ in 0..3 {
+        let mut line = String::new();
+        let _ = tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await;
+    }
+
+    let login = format!(
+        "login client_login_name={} client_login_password={}",
+        ts3_escape_value(&cfg.user),
+        ts3_escape_value(&cfg.password)
+    );
+    serverquery_exec(&mut reader, &mut write_half, &login)
+        .await
+        .map(|_| ())?;
+
+    let use_cmd = if !cfg.sid.is_empty() {
+        format!("use sid={}", ts3_escape_value(&cfg.sid))
+    } else {
+        format!("use port={}", ts3_escape_value(&cfg.use_port))
+    };
+    serverquery_exec(&mut reader, &mut write_half, &use_cmd)
+        .await
+        .map(|_| ())?;
+
+    let find_cmd = format!("clientfind pattern={}", ts3_escape_value(nickname));
+    let lines = serverquery_exec(&mut reader, &mut write_half, &find_cmd).await?;
+    let clid = parse_clientfind_first_clid(&lines).ok_or_else(|| "clientfind returned no clid".to_string())?;
+
+    let edit_cmd = format!("clientedit clid={} client_description={}", clid, encoded_desc);
+    serverquery_exec(&mut reader, &mut write_half, &edit_cmd)
+        .await
+        .map(|_| ())?;
+
+    let _ = serverquery_exec(&mut reader, &mut write_half, "quit").await;
+    Ok(())
+}
+
+async fn serverquery_exec(
+    reader: &mut BufReader<tokio::net::tcp::OwnedReadHalf>,
+    write_half: &mut tokio::net::tcp::OwnedWriteHalf,
+    cmd: &str,
+) -> std::result::Result<Vec<String>, String> {
+    write_half
+        .write_all(cmd.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    write_half
+        .write_all(b"\n")
+        .await
+        .map_err(|e| e.to_string())?;
+    write_half.flush().await.map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    loop {
+        let mut line = String::new();
+        let n = tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line))
+            .await
+            .map_err(|_| "read timeout".to_string())?
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("server closed connection".to_string());
+        }
+        let line = line.trim_end_matches(['\r', '\n']).to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("error") {
+            let (id, msg) = parse_error_line(&line);
+            if id == 0 {
+                return Ok(out);
+            }
+            return Err(format!("error id={id} msg={msg}"));
+        }
+        out.push(line);
+    }
+}
+
+fn parse_error_line(line: &str) -> (i64, String) {
+    let mut id = -1i64;
+    let mut msg = String::new();
+    for token in line.split_whitespace() {
+        if let Some((k, v)) = token.split_once('=') {
+            match k {
+                "id" => {
+                    if let Ok(n) = v.parse::<i64>() {
+                        id = n;
+                    }
+                }
+                "msg" => {
+                    msg = v.to_string();
+                }
+                _ => {}
+            }
+        }
+    }
+    (id, msg)
+}
+
+fn parse_clientfind_first_clid(lines: &[String]) -> Option<u64> {
+    for line in lines {
+        for part in line.split('|') {
+            for token in part.split_whitespace() {
+                if let Some((k, v)) = token.split_once('=') {
+                    if k == "clid" {
+                        if let Ok(n) = v.parse::<u64>() {
+                            return Some(n);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn resolve_repo_relative(path: &str) -> PathBuf {
@@ -938,7 +1168,19 @@ async fn ts3_actor(
                                 }
                             }
 
-                            Some(Some(Ok(_))) => {}
+                            Some(Some(Ok(item))) => {
+                                let mut s = format!("{item:?}");
+                                let lower = s.to_ascii_lowercase();
+                                if lower.contains("commanderror") || lower.contains(" error") || lower.contains("=error") || lower.starts_with("error") {
+                                    if s.len() > 600 {
+                                        s.truncate(600);
+                                        s.push_str("...");
+                                    }
+                                    let msg = format!("ts3 stream item: {s}");
+                                    emit_log(&events_tx, 3, msg.clone());
+                                    warn!("{msg}");
+                                }
+                            }
 
                             Some(Some(Err(e))) => {
                                 emit_log(&events_tx, 4, format!("ts3 error: {e}"));

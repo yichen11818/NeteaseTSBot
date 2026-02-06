@@ -10,8 +10,11 @@ import {
   RefreshCw,
   AlertCircle
 } from 'lucide-vue-next'
+import { getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 
 const USER_COOKIE_KEY = 'tsbot_user_netease_cookie'
+const LIKES_CACHE_KEY = 'tsbot_likes_cache'
+const LIKES_CACHE_DURATION = 150 * 60 * 1000 // 5分钟缓存
 
 const PAGE_SIZE = 200
 
@@ -22,9 +25,78 @@ const loading = ref(false)
 const offset = ref(0)
 const hasMore = ref(false)
 
-async function load() {
+const favoriteSongIds = ref<Set<number>>(new Set())
+
+function refreshFavoriteSongIds() {
+  favoriteSongIds.value = new Set(getFavoriteSongs().map((s) => Number(s.id)))
+}
+
+function isLocalFavorite(song: any): boolean {
+  const id = Number(song?.id)
+  if (!Number.isFinite(id) || id <= 0) return false
+  return favoriteSongIds.value.has(id) || isFavoriteSong(id)
+}
+
+function toggleLocalFavorite(song: any) {
+  toggleFavoriteSong(song)
+  refreshFavoriteSongIds()
+}
+
+// 缓存相关函数
+function getCachedLikes(): any | null {
+  try {
+    const cached = localStorage.getItem(LIKES_CACHE_KEY)
+    if (!cached) return null
+    
+    const { data, timestamp } = JSON.parse(cached)
+    const now = Date.now()
+    
+    // 检查缓存是否过期
+    if (now - timestamp > LIKES_CACHE_DURATION) {
+      localStorage.removeItem(LIKES_CACHE_KEY)
+      return null
+    }
+    
+    return data
+  } catch {
+    return null
+  }
+}
+
+function setCachedLikes(data: any): void {
+  try {
+    const cacheData = {
+      data,
+      timestamp: Date.now()
+    }
+    localStorage.setItem(LIKES_CACHE_KEY, JSON.stringify(cacheData))
+  } catch {
+    // 忽略缓存写入错误
+  }
+}
+
+function clearCachedLikes(): void {
+  localStorage.removeItem(LIKES_CACHE_KEY)
+}
+
+async function load(forceRefresh = false) {
   loading.value = true
   error.value = ''
+  
+  // 如果不是强制刷新，先尝试从缓存读取
+  if (!forceRefresh) {
+    const cachedData = getCachedLikes()
+    if (cachedData) {
+      likes.value = cachedData
+      offset.value = Number(cachedData?.offset ?? 0) + (Number(cachedData?.limit ?? 0) || PAGE_SIZE)
+      hasMore.value = Boolean(cachedData?.has_more)
+      loading.value = false
+      refreshFavoriteSongIds()
+      return
+    }
+  }
+  
+  // 重置状态并重新加载
   likes.value = null
   offset.value = 0
   hasMore.value = false
@@ -38,10 +110,14 @@ async function load() {
     likes.value = data
     offset.value = Number(data?.offset ?? 0) + (Number(data?.limit ?? 0) || PAGE_SIZE)
     hasMore.value = Boolean(data?.has_more)
+    
+    // 缓存数据
+    setCachedLikes(data)
   } catch (e: any) {
     error.value = String(e?.message ?? e)
   } finally {
     loading.value = false
+    refreshFavoriteSongIds()
   }
 }
 
@@ -107,7 +183,10 @@ function formatDuration(duration: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
-onMounted(load)
+onMounted(() => {
+  refreshFavoriteSongIds()
+  load(false) // 首次加载使用缓存
+})
 </script>
 
 <template>
@@ -124,7 +203,7 @@ onMounted(load)
         </span>
       </div>
       <button 
-        @click="load"
+        @click="() => load(true)"
         :disabled="loading"
         class="btn-secondary text-sm py-1.5 px-3"
       >
@@ -244,8 +323,13 @@ onMounted(load)
                       <Play :size="18" />
                     </button>
                     
-                    <button class="p-2 text-red-500 bg-red-50 rounded-lg cursor-default shadow-sm hidden md:block">
-                      <Heart :size="18" fill="currentColor" />
+                    <button 
+                      @click="toggleLocalFavorite(song)"
+                      :class="isLocalFavorite(song) ? 'text-red-500 bg-red-50' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'"
+                      class="p-2 rounded-lg transition-colors"
+                      :title="isLocalFavorite(song) ? '取消本地收藏' : '本地收藏'"
+                    >
+                      <Heart :size="18" :fill="isLocalFavorite(song) ? 'currentColor' : 'none'" />
                     </button>
                   </div>
                 </td>
