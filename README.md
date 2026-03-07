@@ -9,6 +9,7 @@
 ![Vue](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-5-646CFF?logo=vite&logoColor=white)
 ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+[![English README](https://img.shields.io/badge/README-English-blue)](README.en.md)
 
 TSBot 是一个基于 TeamSpeak 3 的音乐机器人，提供：
 
