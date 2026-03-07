@@ -8,7 +8,9 @@ import {
   Heart, 
   Clock,
   Music,
-  Loader2
+  Loader2,
+  User,
+  Settings
 } from 'lucide-vue-next'
 import EmptyState from '../components/EmptyState.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
@@ -23,6 +25,15 @@ const suggestions = ref<string[]>([])
 const hotSearches = ref<any[]>([])
 const showSuggestions = ref(false)
 const defaultKeyword = ref('')
+const selectedPlatform = ref<'netease' | 'qqmusic'>('netease')
+const qqMusicConfigured = ref(false)
+
+// 搜索历史和分页
+const searchHistory = ref<string[]>([])
+const currentPage = ref(1)
+const pageSize = ref(20)
+const hasMore = ref(false)
+const loadingMore = ref(false)
 
 const favoriteSongIds = ref<Set<number>>(new Set())
 
@@ -41,24 +52,113 @@ function toggleLocalFav(song: any) {
   refreshFavoriteSongIds()
 }
 
-async function search() {
+// Check QQ Music admin configuration status
+async function checkQQMusicConfigStatus() {
+  try {
+    const status = await apiGet<any>('/admin/qqmusic/status')
+    qqMusicConfigured.value = !!status?.admin_cookie_set
+  } catch (e) {
+    qqMusicConfigured.value = false
+  }
+}
+
+// 搜索历史管理
+function loadSearchHistory() {
+  try {
+    const history = localStorage.getItem('search-history')
+    if (history) {
+      searchHistory.value = JSON.parse(history)
+    }
+  } catch (e) {
+    searchHistory.value = []
+  }
+}
+
+function saveSearchHistory() {
+  try {
+    localStorage.setItem('search-history', JSON.stringify(searchHistory.value))
+  } catch (e) {
+    // 忽略存储错误
+  }
+}
+
+function addToSearchHistory(keyword: string) {
+  if (!keyword.trim()) return
+  
+  // 移除重复项
+  const filtered = searchHistory.value.filter(item => item !== keyword)
+  // 添加到开头
+  searchHistory.value = [keyword, ...filtered].slice(0, 10) // 保留最近10条
+  saveSearchHistory()
+}
+
+function clearSearchHistory() {
+  searchHistory.value = []
+  saveSearchHistory()
+}
+
+async function search(isLoadMore = false) {
   if (!keywords.value.trim()) return
   
-  loading.value = true
-  error.value = ''
-  status.value = ''
-  songs.value = []
+  if (!isLoadMore) {
+    loading.value = true
+    error.value = ''
+    status.value = ''
+    songs.value = []
+    currentPage.value = 1
+    // 添加到搜索历史
+    addToSearchHistory(keywords.value.trim())
+  } else {
+    loadingMore.value = true
+    // 加载更多时先增加页码
+    currentPage.value++
+  }
+  
   showSuggestions.value = false
   
   try {
-    const res = await apiGet<{ raw: any }>(`/search?keywords=${encodeURIComponent(keywords.value)}&limit=20`)
-    const list = res?.raw?.result?.songs || []
-    songs.value = list
+    if (selectedPlatform.value === 'qqmusic') {
+      const res = await apiGet<{ songs: any[] }>(`/qqmusic/search/songs?keywords=${encodeURIComponent(keywords.value)}&limit=${pageSize.value}&page=${currentPage.value}`)
+      const newSongs = res?.songs || []
+      
+      if (isLoadMore) {
+        songs.value = [...songs.value, ...newSongs]
+      } else {
+        songs.value = newSongs
+      }
+      
+      // QQ音乐判断是否还有更多
+      hasMore.value = newSongs.length === pageSize.value
+    } else {
+      const offset = (currentPage.value - 1) * pageSize.value
+      const res = await apiGet<{ raw: any }>(`/search?keywords=${encodeURIComponent(keywords.value)}&limit=${pageSize.value}&offset=${offset}`)
+      const newSongs = res?.raw?.result?.songs || []
+      
+      if (isLoadMore) {
+        songs.value = [...songs.value, ...newSongs]
+      } else {
+        songs.value = newSongs
+      }
+      
+      // 网易云音乐判断是否还有更多
+      const total = res?.raw?.result?.songCount || 0
+      hasMore.value = songs.value.length < total && newSongs.length === pageSize.value
+    }
   } catch (e: any) {
     error.value = String(e?.message ?? e)
+    // 如果加载更多失败，回退页码
+    if (isLoadMore) {
+      currentPage.value--
+    }
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
+}
+
+async function loadMore() {
+  if (loadingMore.value || !hasMore.value) return
+  await search(true)
 }
 
 async function getSuggestions() {
@@ -112,14 +212,27 @@ async function enqueue(song: any, playNow: boolean) {
   error.value = ''
   status.value = ''
   try {
-    const artist = ((song.ar || song.artists) || []).map((a: any) => a.name).join(', ')
-    const res = await apiPost<{ ok: boolean; id: number; source_url: string }>('/queue/netease', {
-      song_id: String(song.id),
-      title: song.name,
-      artist,
-      play_now: playNow,
-    })
-    status.value = `已添加到播放队列 #${res.id}${playNow ? ' (正在播放)' : ''}`
+    if (selectedPlatform.value === 'qqmusic') {
+      const artist = ((song.singer || song.artists) || []).map((a: any) => a.name).join(', ')
+      const res = await apiPost<{ ok: boolean; id: number; source_url: string }>('/queue/qqmusic', {
+        song_mid: String(song.mid || song.songmid),
+        title: song.name || song.title,
+        artist,
+        play_now: playNow,
+        quality: "320",
+        album_mid: String(song.album?.mid || song.albummid || "")
+      })
+      status.value = `已添加到播放队列 #${res.id}${playNow ? ' (正在播放)' : ''}`
+    } else {
+      const artist = ((song.ar || song.artists) || []).map((a: any) => a.name).join(', ')
+      const res = await apiPost<{ ok: boolean; id: number; source_url: string }>('/queue/netease', {
+        song_id: String(song.id),
+        title: song.name,
+        artist,
+        play_now: playNow,
+      })
+      status.value = `已添加到播放队列 #${res.id}${playNow ? ' (正在播放)' : ''}`
+    }
     
     // Clear status after 3 seconds
     setTimeout(() => {
@@ -168,6 +281,8 @@ onMounted(() => {
   loadHotSearches()
   loadDefaultKeyword()
   refreshFavoriteSongIds()
+  checkQQMusicConfigStatus()
+  loadSearchHistory()
 })
 </script>
 
@@ -179,6 +294,53 @@ onMounted(() => {
         <Search :size="28" class="text-blue-600" />
         搜索音乐
       </h1>
+      
+      <!-- Platform selector -->
+      <div class="mb-4 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-medium text-gray-700">音乐平台:</span>
+          <div class="flex bg-gray-100 rounded-lg p-1">
+            <button
+              @click="selectedPlatform = 'netease'"
+              :class="[
+                'px-3 py-1.5 text-sm font-medium rounded-md transition-all duration-200',
+                selectedPlatform === 'netease' 
+                  ? 'bg-white text-blue-600 shadow-sm' 
+                  : 'text-gray-600 hover:text-gray-900'
+              ]"
+            >
+              网易云音乐
+            </button>
+            <button
+              @click="selectedPlatform = 'qqmusic'"
+              :class="[
+                'px-3 py-1.5 text-sm font-medium rounded-md transition-all duration-200',
+                selectedPlatform === 'qqmusic' 
+                  ? 'bg-white text-blue-600 shadow-sm' 
+                  : 'text-gray-600 hover:text-gray-900'
+              ]"
+            >
+              QQ音乐
+            </button>
+          </div>
+        </div>
+        
+        <!-- QQ Music Config Status -->
+        <div v-if="selectedPlatform === 'qqmusic'" class="flex items-center gap-2">
+          <div v-if="qqMusicConfigured" class="flex items-center gap-2 text-sm text-green-600">
+            <User :size="16" />
+            <span>已配置</span>
+          </div>
+          <a
+            v-else
+            href="/cookie"
+            class="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
+          >
+            <Settings :size="16" />
+            配置QQ音乐
+          </a>
+        </div>
+      </div>
       
       <!-- Search bar -->
       <div class="relative max-w-2xl">
@@ -195,7 +357,7 @@ onMounted(() => {
             @blur="handleBlur"
           />
           <button
-            @click="search"
+            @click="() => search()"
             :disabled="loading || !keywords.trim()"
             class="absolute right-2 top-1/2 transform -translate-y-1/2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
           >
@@ -204,19 +366,46 @@ onMounted(() => {
           </button>
         </div>
         
-        <!-- Search suggestions -->
+        <!-- Search suggestions and history -->
         <div 
-          v-if="showSuggestions && suggestions.length > 0"
+          v-if="(showSuggestions && suggestions.length > 0) || (!keywords.trim() && searchHistory.length > 0)"
           class="absolute top-full left-0 right-0 mt-2 bg-white/95 backdrop-blur-xl border border-gray-100/50 rounded-xl shadow-xl z-50 max-h-[320px] overflow-y-auto py-2 ring-1 ring-black/5"
         >
-          <div
-            v-for="suggestion in suggestions"
-            :key="suggestion"
-            @click="selectSuggestion(suggestion)"
-            class="px-4 py-2.5 hover:bg-blue-50/50 cursor-pointer flex items-center gap-3 group transition-colors"
-          >
-            <Search :size="16" class="text-gray-400 group-hover:text-blue-500" />
-            <span class="text-gray-700 group-hover:text-gray-900">{{ suggestion }}</span>
+          <!-- Search suggestions -->
+          <div v-if="showSuggestions && suggestions.length > 0">
+            <div class="px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide">搜索建议</div>
+            <div
+              v-for="suggestion in suggestions"
+              :key="suggestion"
+              @click="selectSuggestion(suggestion)"
+              class="px-4 py-2.5 hover:bg-blue-50/50 cursor-pointer flex items-center gap-3 group transition-colors"
+            >
+              <Search :size="16" class="text-gray-400 group-hover:text-blue-500" />
+              <span class="text-gray-700 group-hover:text-gray-900">{{ suggestion }}</span>
+            </div>
+          </div>
+          
+          <!-- Search history -->
+          <div v-if="!keywords.trim() && searchHistory.length > 0">
+            <div class="px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide flex items-center justify-between">
+              <span>搜索历史</span>
+              <button 
+                @click="clearSearchHistory"
+                class="text-gray-400 hover:text-red-500 transition-colors"
+                title="清除历史"
+              >
+                <span class="text-xs">清除</span>
+              </button>
+            </div>
+            <div
+              v-for="historyItem in searchHistory"
+              :key="historyItem"
+              @click="selectSuggestion(historyItem)"
+              class="px-4 py-2.5 hover:bg-gray-50/50 cursor-pointer flex items-center gap-3 group transition-colors"
+            >
+              <Clock :size="16" class="text-gray-400 group-hover:text-gray-600" />
+              <span class="text-gray-600 group-hover:text-gray-900">{{ historyItem }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -314,9 +503,9 @@ onMounted(() => {
                     <!-- Thumbnail -->
                     <div class="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 relative group/cover shadow-sm bg-gray-100">
                       <img 
-                        v-if="song.al?.picUrl || song.album?.picUrl || (song.artists && song.artists[0]?.img1v1Url)" 
-                        :src="(song.al?.picUrl || song.album?.picUrl || song.artists?.[0]?.img1v1Url) + '?param=100y100'" 
-                        :alt="song.name"
+                        v-if="selectedPlatform === 'qqmusic' ? (song.album?.pmid || song.albummid) : (song.al?.picUrl || song.album?.picUrl || (song.artists && song.artists[0]?.img1v1Url))" 
+                        :src="selectedPlatform === 'qqmusic' ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${song.album?.pmid || song.albummid}.jpg` : ((song.al?.picUrl || song.album?.picUrl || song.artists?.[0]?.img1v1Url) + '?param=100y100')" 
+                        :alt="song.name || song.title"
                         class="w-full h-full object-cover"
                       />
                       <div v-else class="w-full h-full bg-gradient-to-br from-blue-100 to-indigo-100 flex items-center justify-center">
@@ -331,20 +520,20 @@ onMounted(() => {
                     </div>
                     
                     <div class="min-w-0">
-                      <div class="font-semibold text-gray-900 line-clamp-1 text-sm group-hover:text-blue-600 transition-colors" :title="song.name">{{ song.name }}</div>
+                      <div class="font-semibold text-gray-900 line-clamp-1 text-sm group-hover:text-blue-600 transition-colors" :title="song.name || song.title">{{ song.name || song.title }}</div>
                       <div class="text-xs text-gray-500 md:hidden line-clamp-1 mt-0.5">
-                        {{ ((song.ar || song.artists) || []).map((a: any) => a.name).join(', ') }}
+                        {{ selectedPlatform === 'qqmusic' ? ((song.singer || song.artists) || []).map((a: any) => a.name).join(', ') : ((song.ar || song.artists) || []).map((a: any) => a.name).join(', ') }}
                       </div>
                     </div>
                   </div>
                 </td>
                 <td class="px-3 md:px-6 py-3 md:py-4 text-sm text-gray-600 hidden md:table-cell">
-                   <div class="truncate max-w-[150px]" :title="((song.ar || song.artists) || []).map((a: any) => a.name).join(', ')">
-                      {{ ((song.ar || song.artists) || []).map((a: any) => a.name).join(', ') }}
+                   <div class="truncate max-w-[150px]" :title="selectedPlatform === 'qqmusic' ? ((song.singer || song.artists) || []).map((a: any) => a.name).join(', ') : ((song.ar || song.artists) || []).map((a: any) => a.name).join(', ')">
+                      {{ selectedPlatform === 'qqmusic' ? ((song.singer || song.artists) || []).map((a: any) => a.name).join(', ') : ((song.ar || song.artists) || []).map((a: any) => a.name).join(', ') }}
                    </div>
                 </td>
                 <td class="px-3 md:px-6 py-3 md:py-4 text-sm text-gray-500 hidden lg:table-cell">
-                  <div class="truncate max-w-[150px]" :title="song.al?.name || song.album?.name">{{ song.al?.name || song.album?.name }}</div>
+                  <div class="truncate max-w-[150px]" :title="selectedPlatform === 'qqmusic' ? (song.album?.name || song.albumname) : (song.al?.name || song.album?.name)">{{ selectedPlatform === 'qqmusic' ? (song.album?.name || song.albumname) : (song.al?.name || song.album?.name) }}</div>
                 </td>
                 <td class="px-3 md:px-6 py-3 md:py-4 text-right text-sm text-gray-400 font-mono tabular-nums">
                   {{ song.dt || song.duration ? formatDuration(song.dt || song.duration) : '--:--' }}
@@ -377,7 +566,26 @@ onMounted(() => {
             </tbody>
           </table>
         </div>
+        
+        <!-- Load more button -->
+        <div v-if="songs.length > 0 && hasMore" class="mt-6 flex justify-center">
+          <button
+            @click="loadMore"
+            :disabled="loadingMore"
+            class="px-6 py-3 bg-white border border-gray-200 rounded-xl text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-all duration-200 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            <Loader2 v-if="loadingMore" :size="16" class="animate-spin" />
+            <span>{{ loadingMore ? '加载中...' : '加载更多' }}</span>
+          </button>
+        </div>
+        
+        <!-- Results info -->
+        <div v-if="songs.length > 0" class="mt-4 text-center text-sm text-gray-500">
+          已显示 {{ songs.length }} 首歌曲
+          <span v-if="!hasMore">（已全部加载）</span>
+        </div>
       </div>
     </div>
+
   </div>
 </template>

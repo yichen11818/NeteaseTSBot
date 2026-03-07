@@ -26,10 +26,10 @@ class NeteaseClient:
             r.raise_for_status()
             return r.json()
 
-    async def search(self, keywords: str, limit: int = 20, type_: int = 1) -> dict[str, Any]:
+    async def search(self, keywords: str, limit: int = 20, offset: int = 0, type_: int = 1) -> dict[str, Any]:
         return await self._get(
             "/search",
-            params={"keywords": keywords, "limit": limit, "type": type_},
+            params={"keywords": keywords, "limit": limit, "offset": offset, "type": type_},
         )
 
     async def song_url(self, song_id: str, cookie: str | None = None, br: int | None = None) -> dict[str, Any]:

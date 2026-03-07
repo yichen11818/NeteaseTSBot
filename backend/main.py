@@ -17,6 +17,7 @@ from .crypto import decrypt_text, encrypt_text
 from .db import create_db_and_tables, get_session, new_session
 from .models import HistoryItem, QueueItem, Secret
 from .netease import NeteaseClient
+from .qqmusic import QQMusicClient
 from .voice_client import VoiceClient
 from .config import settings
 from .logger import logger
@@ -26,13 +27,20 @@ app = FastAPI(title="tsbot-backend")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 netease = NeteaseClient()
+qqmusic = QQMusicClient()
 voice = VoiceClient()
+
+# Add OPTIONS handler for CORS preflight requests
+@app.options("/{full_path:path}")
+async def options_handler():
+    return {"message": "OK"}
 
 _chat_task: asyncio.Task[None] | None = None
 _current_queue_item_id: int | None = None
@@ -75,6 +83,15 @@ class AddNeteaseQueueRequest(BaseModel):
     title: str
     artist: str = ""
     play_now: bool = False
+
+
+class AddQQMusicQueueRequest(BaseModel):
+    song_mid: str
+    title: str
+    artist: str = ""
+    play_now: bool = False
+    quality: str = "320"
+    album_mid: str = ""
 
 class VolumeUpdateRequest(BaseModel):
     volume_percent: int
@@ -809,8 +826,8 @@ async def voice_repeat(req: RepeatRequest) -> dict:
 
 
 @app.get("/search", response_model=SearchResponse)
-async def search(keywords: str, limit: int = 20) -> SearchResponse:
-    data = await netease.search(keywords=keywords, limit=limit)
+async def search(keywords: str, limit: int = 20, offset: int = 0) -> SearchResponse:
+    data = await netease.search(keywords=keywords, limit=limit, offset=offset)
     try:
         songs = (((data or {}).get("result") or {}).get("songs") or [])
         if isinstance(songs, list) and songs:
@@ -924,24 +941,45 @@ async def lyrics(queue_item_id: int) -> LyricsResponse:
     finally:
         session.close()
 
-    if not track_id.startswith("netease:"):
-        return LyricsResponse(lyrics=[])
-
-    song_id = track_id.split(":", 1)[1]
-    cookie = None
-    try:
-        # Prefer admin cookie to reduce rate limit / restricted lyrics.
-        session2 = new_session()
-        try:
-            cookie = _get_admin_cookie(session2)
-        finally:
-            session2.close()
-    except Exception:
+    if track_id.startswith("netease:"):
+        # 网易云音乐歌词
+        song_id = track_id.split(":", 1)[1]
         cookie = None
+        try:
+            # Prefer admin cookie to reduce rate limit / restricted lyrics.
+            session2 = new_session()
+            try:
+                cookie = _get_admin_cookie(session2)
+            finally:
+                session2.close()
+        except Exception:
+            cookie = None
 
-    data = await netease.lyric(song_id=song_id, cookie=cookie)
-    lrc = (((data or {}).get("lrc") or {}).get("lyric") or "")
-    return LyricsResponse(lyrics=_parse_lrc_to_lines(str(lrc)))
+        data = await netease.lyric(song_id=song_id, cookie=cookie)
+        lrc = (((data or {}).get("lrc") or {}).get("lyric") or "")
+        return LyricsResponse(lyrics=_parse_lrc_to_lines(str(lrc)))
+    
+    elif track_id.startswith("qqmusic:"):
+        # QQ 音乐歌词
+        song_mid = track_id.split(":", 1)[1]
+        try:
+            # 设置 QQ 音乐 admin cookie
+            session2 = new_session()
+            try:
+                cookie = _get_admin_qqmusic_cookie(session2)
+                qqmusic.set_cookie(cookie)
+            finally:
+                session2.close()
+            
+            # 获取 QQ 音乐歌词
+            data = await qqmusic.get_song_lyric(song_mid)
+            lrc = data.get("lyric", "") if data else ""
+            return LyricsResponse(lyrics=_parse_lrc_to_lines(str(lrc)))
+        except Exception:
+            return LyricsResponse(lyrics=[])
+    
+    else:
+        return LyricsResponse(lyrics=[])
 
 
 @app.get("/playlist/detail")
@@ -1112,6 +1150,16 @@ def _get_admin_cookie(session: Session) -> str:
         raise HTTPException(status_code=500, detail="failed to decrypt admin netease cookie")
 
 
+def _get_admin_qqmusic_cookie(session: Session) -> str:
+    row = session.get(Secret, "qqmusic_cookie")
+    if not row:
+        raise HTTPException(status_code=400, detail="admin qqmusic cookie not set")
+    try:
+        return decrypt_text(row.value)
+    except Exception:
+        raise HTTPException(status_code=500, detail="failed to decrypt admin qqmusic cookie")
+
+
 def _require_admin_token(request: Request) -> None:
     token = (settings.admin_token or "").strip()
     if not token:
@@ -1231,6 +1279,74 @@ async def _enqueue_netease_song(
             session.commit()
 
         return int(item.id), trial
+    finally:
+        session.close()
+
+
+async def _enqueue_qqmusic_song(
+    *,
+    song_mid: str,
+    title: str,
+    artist: str,
+    play_now: bool,
+    requested_by: str,
+    quality: str = "320",
+    album_mid: str = "",
+) -> tuple[int, bool]:
+    """Enqueue a QQ Music song"""
+    session = new_session()
+    try:
+        # Use admin QQ Music cookie (server-side), like netease.
+        cookie = _get_admin_qqmusic_cookie(session)
+        qqmusic.set_cookie(cookie)
+
+        # Get music URL from QQ Music
+        url = await qqmusic.get_music_url_simple(song_mid, quality)
+        if not url:
+            raise HTTPException(status_code=404, detail="无法获取 QQ 音乐播放链接，可能需要 VIP 会员或该歌曲不可用")
+        
+        # Get song cover using album MID
+        album_cover_url = qqmusic.get_song_cover_image(album_mid) if album_mid else ""
+        
+        # Create queue item
+        item = QueueItem(
+            track_id=f"qqmusic:{song_mid}",
+            title=title,
+            artist=artist,
+            album="",  # QQ Music doesn't provide album info in basic API
+            duration=0,  # Duration not available from basic API
+            cover_url=album_cover_url,
+            source_url=url,
+        )
+        session.add(item)
+        session.commit()
+
+        _schedule_ts_description_update()
+
+        if play_now:
+            await _set_now_playing_queue_item(
+                int(item.id),
+                url,
+                duration_ms=0,
+                artist=artist,
+                album="",
+                artwork_url=album_cover_url,
+            )
+            await voice.play(source_url=url, title=title, requested_by=requested_by, notice="")
+            hist = HistoryItem(
+                track_id=item.track_id,
+                title=title,
+                artist=artist,
+                album="",
+                duration=0,
+                cover_url=album_cover_url,
+                source_url=url,
+                requested_by=requested_by,
+            )
+            session.add(hist)
+            session.commit()
+
+        return int(item.id), False  # QQ Music doesn't have trial mode
     finally:
         session.close()
 
@@ -1919,6 +2035,24 @@ async def add_queue_netease(req: AddQueueNeteaseRequest) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/queue/qqmusic")
+async def add_queue_qqmusic(req: AddQQMusicQueueRequest) -> dict:
+    try:
+        item_id, trial = await _enqueue_qqmusic_song(
+            song_mid=req.song_mid,
+            title=req.title,
+            artist=req.artist,
+            play_now=req.play_now,
+            requested_by="web",
+            quality=req.quality,
+            album_mid=req.album_mid,
+        )
+        return {"ok": True, "id": item_id, "trial": trial}
+    except Exception as e:
+        logger.error(f"Failed to enqueue qqmusic song {req.song_mid}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/queue")
 def get_queue(session: Session = Depends(get_session)) -> list[dict]:
     rows = session.execute(select(QueueItem).order_by(QueueItem.id.asc())).scalars().all()
@@ -2145,5 +2279,262 @@ def _get_admin_cookie_or_none(request: Request) -> str | None:
         return _get_admin_cookie(request)
     except HTTPException:
         return None
+
+
+# QQ 音乐 API 端点
+
+@app.get("/qqmusic/search")
+async def qqmusic_search(keywords: str, search_type: int = 0, limit: int = 50, page: int = 1) -> dict:
+    """QQ音乐搜索"""
+    try:
+        result = await qqmusic.search_with_keyword(keywords, search_type, limit, page)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/search/songs")
+async def qqmusic_search_songs(keywords: str, limit: int = 50, page: int = 1) -> dict:
+    """QQ音乐搜索歌曲（简化版）"""
+    try:
+        songs = await qqmusic.search_songs_simple(keywords, limit, page)
+        return {"songs": songs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/song/{song_mid}/url")
+async def qqmusic_song_url(song_mid: str, quality: str = "320") -> dict:
+    """获取QQ音乐播放URL"""
+    try:
+        data = await qqmusic.get_music_url(song_mid, quality)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/song/{song_mid}/lyric")
+async def qqmusic_song_lyric(song_mid: str, parse: bool = False) -> dict:
+    """获取QQ音乐歌词"""
+    try:
+        if parse:
+            data = await qqmusic.get_song_lyric(song_mid)
+            parsed = qqmusic.parse_lyric(data)
+            return {"lyric": parsed}
+        else:
+            lyric = await qqmusic.get_song_lyric_simple(song_mid)
+            return {"lyric": lyric}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/playlist/{playlist_id}")
+async def qqmusic_playlist_detail(playlist_id: str) -> dict:
+    """获取QQ音乐歌单详情"""
+    try:
+        data = await qqmusic.get_song_list(playlist_id)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/playlist/{playlist_id}/songs")
+async def qqmusic_playlist_songs(playlist_id: str) -> dict:
+    """获取QQ音乐歌单歌曲列表（简化版）"""
+    try:
+        songs = await qqmusic.get_song_list_simple(playlist_id)
+        return {"songs": songs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/playlist/{playlist_id}/name")
+async def qqmusic_playlist_name(playlist_id: str) -> dict:
+    """获取QQ音乐歌单名称"""
+    try:
+        name = await qqmusic.get_song_list_name_simple(playlist_id)
+        return {"name": name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/album/{album_mid}")
+async def qqmusic_album_detail(album_mid: str) -> dict:
+    """获取QQ音乐专辑详情"""
+    try:
+        data = await qqmusic.get_album_song_list(album_mid)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/album/{album_mid}/name")
+async def qqmusic_album_name(album_mid: str) -> dict:
+    """获取QQ音乐专辑名称"""
+    try:
+        data = await qqmusic.get_album_name(album_mid)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/singer/{singer_mid}")
+async def qqmusic_singer_info(singer_mid: str) -> dict:
+    """获取QQ音乐歌手信息"""
+    try:
+        data = await qqmusic.get_singer_info(singer_mid)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/mv/{vid}")
+async def qqmusic_mv_info(vid: str) -> dict:
+    """获取QQ音乐MV信息"""
+    try:
+        data = await qqmusic.get_mv_info(vid)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/album/{album_mid}/cover")
+async def qqmusic_album_cover(album_mid: str) -> dict:
+    """获取QQ音乐专辑封面URL"""
+    try:
+        cover_url = qqmusic.get_album_cover_image(album_mid)
+        return {"cover_url": cover_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# QQ Music Login endpoints
+
+@app.get("/qqmusic/login/qr/key")
+async def qqmusic_qr_key() -> dict:
+    """获取QQ音乐二维码登录密钥"""
+    try:
+        return await qqmusic.get_qr_key()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/login/qr/check")
+async def qqmusic_qr_check(qr_key: str, ptqrtoken: str, pt_login_sig: str = "") -> dict:
+    """检查QQ音乐二维码登录状态"""
+    try:
+        # Set the pt_login_sig in the client if provided
+        if pt_login_sig:
+            qqmusic._pt_login_sig = pt_login_sig
+        return await qqmusic.check_qr_status(qr_key, ptqrtoken)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class QQMusicCookieSetRequest(BaseModel):
+    cookie: str
+
+
+class QQMusicQRConfirmRequest(BaseModel):
+    auth_url: str
+
+
+@app.get("/admin/qqmusic/status")
+async def admin_qqmusic_status(request: Request, session: Session = Depends(get_session)) -> dict:
+    _require_admin_token(request)
+    row = session.get(Secret, "qqmusic_cookie")
+    return {"admin_cookie_set": bool(row and row.value)}
+
+
+@app.post("/admin/qqmusic/cookie")
+async def admin_qqmusic_set_cookie(
+    req: QQMusicCookieSetRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> dict:
+    _require_admin_token(request)
+    c = (req.cookie or "").strip()
+    if not c:
+        raise HTTPException(status_code=400, detail="cookie is empty")
+    if c.lower().startswith("cookie:"):
+        c = c.split(":", 1)[1].strip()
+    c = c.replace("\r", "").replace("\n", "")
+    _set_secret(session, "qqmusic_cookie", c)
+    qqmusic.set_cookie(c)
+    return {"ok": True, "admin_cookie_set": True, "uin": qqmusic.get_uin()}
+
+
+@app.post("/admin/qqmusic/qr/confirm")
+async def admin_qqmusic_qr_confirm(
+    req: QQMusicQRConfirmRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> dict:
+    """管理员扫码成功后确认登录，获取并保存最终 cookies"""
+    _require_admin_token(request)
+    r = await qqmusic.confirm_qr_login(req.auth_url)
+    c = (qqmusic.get_cookie() or "").strip()
+    print(f"[DEBUG] QR confirm - new cookie length: {len(c)}, preview: {c[:200]}...")
+    if c:
+        _set_secret(session, "qqmusic_cookie", c)
+        print(f"[DEBUG] QR confirm - cookie saved to database")
+    else:
+        print(f"[DEBUG] QR confirm - no cookie to save")
+    return {"ok": True, "admin_cookie_set": bool(c), "uin": qqmusic.get_uin(), "raw": r}
+
+
+@app.post("/qqmusic/login/cookie")
+async def qqmusic_set_cookie(req: QQMusicCookieSetRequest) -> dict:
+    """设置QQ音乐Cookie"""
+    try:
+        qqmusic.set_cookie(req.cookie)
+        return {"success": True, "message": "Cookie设置成功", "uin": qqmusic.get_uin()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/login/status")
+async def qqmusic_login_status() -> dict:
+    """获取QQ音乐登录状态"""
+    try:
+        if not qqmusic.get_cookie():
+            return {"logged_in": False, "message": "未设置Cookie"}
+        
+        refresh_result = await qqmusic.refresh_login()
+        return {
+            "logged_in": refresh_result["success"],
+            "message": refresh_result["message"],
+            "uin": qqmusic.get_uin(),
+            "cookie": qqmusic.get_cookie()
+        }
+    except Exception as e:
+        return {"logged_in": False, "message": str(e)}
+
+
+@app.get("/qqmusic/user/info")
+async def qqmusic_user_info() -> dict:
+    """获取QQ音乐用户信息"""
+    try:
+        return await qqmusic.get_user_info()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/qqmusic/user/playlists")
+async def qqmusic_user_playlists() -> dict:
+    """获取QQ音乐用户歌单"""
+    try:
+        return await qqmusic.get_user_playlists()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/qqmusic/login/refresh")
+async def qqmusic_refresh_login() -> dict:
+    """刷新QQ音乐登录状态"""
+    try:
+        return await qqmusic.refresh_login()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -183,6 +183,96 @@
             </div>
           </div>
         </section>
+
+        <!-- QQ Music Admin Section -->
+        <section class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden relative">
+          <div class="absolute top-0 right-0 p-6 opacity-[0.03] pointer-events-none">
+            <Shield :size="200" class="text-black" />
+          </div>
+
+          <div class="p-5 md:p-8 relative z-10">
+            <div class="flex items-center justify-between mb-6 md:mb-8">
+              <div>
+                <h2 class="text-xl font-bold text-gray-900 flex items-center gap-3">
+                  QQ音乐后台授权
+                  <span
+                    :class="[
+                      'text-xs px-2.5 py-1 rounded-full font-semibold border transition-colors',
+                      qqAdminStatus
+                        ? 'bg-green-50 text-green-700 border-green-200'
+                        : 'bg-gray-100 text-gray-600 border-gray-200'
+                    ]"
+                  >
+                    {{ qqAdminStatus ? '已授权' : '未授权' }}
+                  </span>
+                </h2>
+                <p class="text-gray-500 text-sm mt-2">用于服务器端点歌播放（Cookie 加密存储在服务器，不做返回）</p>
+              </div>
+            </div>
+
+            <div class="space-y-8">
+              <div class="flex flex-col md:flex-row gap-8">
+                <div class="flex-1 space-y-6">
+                  <div class="flex flex-wrap gap-3">
+                    <button @click="startQQAdminQr" class="btn-primary shadow-blue-200">
+                      <QrCode :size="18" />
+                      扫码授权
+                    </button>
+                    <button @click="load" class="btn-secondary">
+                      <RefreshCw :size="18" />
+                      刷新状态
+                    </button>
+                  </div>
+
+                  <div v-if="qqAdminStatus" class="flex items-center gap-2 text-sm text-green-600 font-medium">
+                    <CheckCircle2 :size="16" />
+                    服务器已配置有效 Cookie
+                  </div>
+                </div>
+
+                <div
+                  v-if="qqAdminQrImg"
+                  class="flex-shrink-0 flex flex-col items-center gap-4 bg-white p-6 rounded-2xl border border-gray-200 shadow-lg shadow-gray-100 animate-scale-in"
+                >
+                  <img :src="qqAdminQrImg" alt="qq admin qr" class="w-48 h-48 object-contain rounded-lg" />
+                  <span class="text-sm text-gray-500 font-medium flex items-center gap-1.5">
+                    <Smartphone :size="16" />
+                    请使用手机 QQ 扫码
+                  </span>
+                </div>
+              </div>
+
+              <!-- Manual Cookie Input -->
+              <div class="pt-8 border-t border-gray-100">
+                <h3 class="text-sm font-bold text-gray-900 mb-4 flex items-center gap-2">
+                  <Terminal :size="16" class="text-gray-400" />
+                  手动配置
+                </h3>
+                <div class="flex flex-col md:flex-row gap-3">
+                  <input
+                    v-model="qqAdminManualCookie"
+                    type="text"
+                    placeholder="输入 Cookie 字符串 (uin=...; p_skey=... 等)"
+                    class="input-field flex-1 font-mono text-sm"
+                  />
+                  <input
+                    v-model="adminToken"
+                    type="password"
+                    placeholder="Admin Token (可选)"
+                    class="input-field md:w-48 font-mono text-sm"
+                  />
+                  <button @click="setQQAdminCookie" class="btn-secondary whitespace-nowrap font-medium">
+                    保存配置
+                  </button>
+                </div>
+                <p class="text-xs text-gray-400 mt-3 flex items-center gap-1.5">
+                  <AlertCircle :size="12" />
+                  QQ音乐获取播放链接通常需要登录态 cookie。
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   </div>
@@ -215,19 +305,37 @@ const adminStatus = ref<boolean>(false)
 const adminQrKey = ref('')
 const adminQrImg = ref('')
 
+const qqAdminStatus = ref<boolean>(false)
+const qqAdminQrKey = ref('')
+const qqAdminQrImg = ref('')
+const qqAdminPtqrtoken = ref('')
+const qqAdminPtLoginSig = ref('')
+const qqAdminAuthUrl = ref('')
+
 const adminManualCookie = ref('')
+const qqAdminManualCookie = ref('')
 const adminToken = ref('')
 
 const status = ref('')
 
 let userTimer: number | null = null
 let adminTimer: number | null = null
+let qqAdminTimer: number | null = null
 
 async function load() {
   status.value = ''
   userCookie.value = localStorage.getItem(USER_COOKIE_KEY) || ''
   const st = await apiGet<{ admin_cookie_set: boolean }>('/admin/status')
   adminStatus.value = !!st?.admin_cookie_set
+
+  try {
+    const headers: Record<string, string> = {}
+    if (adminToken.value.trim()) headers['x-admin-token'] = adminToken.value.trim()
+    const qst = await apiGet<{ admin_cookie_set: boolean }>('/admin/qqmusic/status', headers)
+    qqAdminStatus.value = !!qst?.admin_cookie_set
+  } catch {
+    qqAdminStatus.value = false
+  }
 }
 
 async function setAdminCookie() {
@@ -240,6 +348,89 @@ async function setAdminCookie() {
     await apiPost<any>('/admin/cookie', { cookie }, headers)
     adminManualCookie.value = ''
     status.value = 'admin cookie saved server-side'
+    await load()
+  } catch (e: any) {
+    status.value = String(e?.message ?? e)
+  }
+}
+
+async function startQQAdminQr() {
+  status.value = ''
+  try {
+    stopQQAdminPoll()
+    qqAdminQrImg.value = ''
+    qqAdminAuthUrl.value = ''
+
+    const keyRes = await apiGet<any>('/qqmusic/login/qr/key')
+    const imgBase64 = String(keyRes?.qr_image_base64 || '')
+    qqAdminQrImg.value = imgBase64 ? `data:image/png;base64,${imgBase64}` : String(keyRes?.qr_url || '')
+    qqAdminQrKey.value = String(keyRes?.qr_key || '')
+    qqAdminPtqrtoken.value = String(keyRes?.ptqrtoken || '')
+    qqAdminPtLoginSig.value = String(keyRes?.pt_login_sig || '')
+
+    if (!qqAdminQrKey.value || !qqAdminPtqrtoken.value) throw new Error('failed to get qqmusic qr key')
+
+    status.value = 'qqmusic admin qr created'
+    qqAdminTimer = window.setInterval(checkQQAdminQr, 1500)
+  } catch (e: any) {
+    status.value = String(e?.message ?? e)
+  }
+}
+
+async function checkQQAdminQr() {
+  status.value = ''
+  try {
+    if (!qqAdminQrKey.value || !qqAdminPtqrtoken.value) return
+    const r = await apiGet<any>(
+      `/qqmusic/login/qr/check?qr_key=${encodeURIComponent(qqAdminQrKey.value)}` +
+        `&ptqrtoken=${encodeURIComponent(qqAdminPtqrtoken.value)}` +
+        `&pt_login_sig=${encodeURIComponent(qqAdminPtLoginSig.value)}`
+    )
+    const st = String(r?.status || '')
+
+    if (st === 'waiting') {
+      status.value = 'qqmusic qr waiting'
+      return
+    }
+    if (st === 'scanning') {
+      status.value = 'qqmusic qr scanned (confirm on phone)'
+      return
+    }
+    if (st === 'expired') {
+      status.value = 'qqmusic qr expired'
+      stopQQAdminPoll()
+      return
+    }
+    if (st === 'success') {
+      const authUrl = String(r?.auth_url || '')
+      if (!authUrl) throw new Error('authorized but auth_url is empty')
+
+      qqAdminAuthUrl.value = authUrl
+      const headers: Record<string, string> = {}
+      if (adminToken.value.trim()) headers['x-admin-token'] = adminToken.value.trim()
+      await apiPost<any>('/admin/qqmusic/qr/confirm', { auth_url: authUrl }, headers)
+      status.value = 'qqmusic admin authorized (cookie saved server-side)'
+      stopQQAdminPoll()
+      await load()
+      return
+    }
+
+    status.value = `qqmusic qr unknown: status=${st}`
+  } catch (e: any) {
+    status.value = String(e?.message ?? e)
+  }
+}
+
+async function setQQAdminCookie() {
+  status.value = ''
+  try {
+    const cookie = qqAdminManualCookie.value
+    if (!cookie.trim()) throw new Error('cookie is empty')
+    const headers: Record<string, string> = {}
+    if (adminToken.value.trim()) headers['x-admin-token'] = adminToken.value.trim()
+    await apiPost<any>('/admin/qqmusic/cookie', { cookie }, headers)
+    qqAdminManualCookie.value = ''
+    status.value = 'qqmusic admin cookie saved server-side'
     await load()
   } catch (e: any) {
     status.value = String(e?.message ?? e)
@@ -263,6 +454,13 @@ function stopAdminPoll() {
   if (adminTimer !== null) {
     clearInterval(adminTimer)
     adminTimer = null
+  }
+}
+
+function stopQQAdminPoll() {
+  if (qqAdminTimer !== null) {
+    clearInterval(qqAdminTimer)
+    qqAdminTimer = null
   }
 }
 
