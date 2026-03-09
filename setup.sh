@@ -88,7 +88,7 @@ ENV_FILE="tsbot.env"
 if [[ ! -f "$ENV_FILE" ]]; then
     warn "$ENV_FILE not found, copying from example..."
     cp tsbot.env.example "$ENV_FILE"
-    warn "Please edit $ENV_FILE and fill in your TS3 server, NetEase cookies, etc."
+    warn "Please edit $ENV_FILE and fill in your TeamSpeak settings, cookie key, and music source config."
 else
     log "$ENV_FILE exists."
     # Quick sanity check for required fields
@@ -99,12 +99,12 @@ else
                 MISSING+=("TSBOT_TS3_HOST")
             fi
         fi
-        if [[ $line =~ ^export[[:space:]]+NETEASE_ADMIN_COOKIE= ]]; then
-            if [[ $line =~ \"your_admin_cookie_here\" ]] || [[ $line =~ \"\" ]]; then
-                MISSING+=("NETEASE_ADMIN_COOKIE")
+        if [[ $line =~ ^export[[:space:]]+TSBOT_COOKIE_KEY= ]]; then
+            if [[ $line =~ \"your_cookie_key\" ]] || [[ $line =~ \"\" ]]; then
+                MISSING+=("TSBOT_COOKIE_KEY")
             fi
         fi
-    done < <(grep -E '^export (TSBOT_TS3_HOST|NETEASE_ADMIN_COOKIE)=' "$ENV_FILE" || true)
+    done < <(grep -E '^export (TSBOT_TS3_HOST|TSBOT_COOKIE_KEY)=' "$ENV_FILE" || true)
     if [[ ${#MISSING[@]} -gt 0 ]]; then
         warn "Please fill in these fields in $ENV_FILE: ${MISSING[*]}"
     fi
@@ -115,7 +115,7 @@ mkdir -p logs
 
 log "=== Setup complete ==="
 log "Next steps:"
-log "  1) Edit $ENV_FILE with your TS3 and NetEase settings"
+log "  1) Edit $ENV_FILE with your TeamSpeak settings and music source config"
 log "  2) Start services:"
 log "     ./run-voicemake.sh   # (in one terminal)"
 log "     ./run-backend.sh     # (in another terminal)"

@@ -1,6 +1,6 @@
 # TSBot 部署和运行指南
 
-TSBot 是一个基于 TS3 的音乐机器人，包含 Python 后端、Vue 前端和 C++/Rust 语音服务。
+TSBot 是一个基于 TeamSpeak 的音乐机器人，包含 Python 后端、Vue 前端和 Rust 语音服务。
 
 ## 系统要求
 
@@ -8,8 +8,8 @@ TSBot 是一个基于 TS3 的音乐机器人，包含 Python 后端、Vue 前端
 - **Python**: 3.8+
 - **Node.js**: 16+
 - **CMake**: 3.16+
-- **Rust**: 1.70+ (可选，用于 Rust 语音服务)
-- **TeamSpeak 3 Client SDK**
+- **Rust**: 1.70+（推荐，默认语音服务实现）
+- **TeamSpeak 3 Client SDK**：仅旧版 C++ 语音服务路径需要；默认 Rust `voice-service` 不依赖它
 
 ## 快速开始
 
@@ -23,7 +23,7 @@ cd tsbot
 复制环境配置文件并修改：
 ```bash
 cp tsbot.env.example tsbot.env
-# 编辑 tsbot.env 文件，配置你的 TS3 服务器信息
+# 编辑 tsbot.env 文件，配置你的 TeamSpeak 服务器、音乐源和 cookie 信息
 ```
 
 ### 3. 安装依赖
@@ -105,7 +105,7 @@ chmod +x ./nohup-start.sh ./nohup-stop.sh ./nohup-status.sh
 #### 1. 启动语音服务
 ```bash
 # 设置环境变量并启动
-TSBOT_TS3_HOST=your_ts3_host \
+TSBOT_TS3_HOST=your_teamspeak_host \
 TSBOT_TS3_PORT=9987 \
 TSBOT_TS3_NICKNAME=tsbot \
 TSBOT_TS3_CHANNEL_ID=2 \
@@ -139,16 +139,21 @@ npm --prefix web run preview
 编辑 `tsbot.env` 文件：
 
 ```env
-# TS3 服务器配置
+# TeamSpeak 服务器配置（变量名 `TSBOT_TS3_*` 为兼容历史保留，也用于 TS6 主客户端连接）
 TSBOT_TS3_HOST=your_teamspeak_server_ip
 TSBOT_TS3_PORT=9987
 TSBOT_TS3_NICKNAME=tsbot
 TSBOT_TS3_CHANNEL_ID=2
+TSBOT_TS3_IDENTITY_FILE=./logs/identity.json
+# TSBOT_TS3_CHANNEL_PATH=/Music
+# TSBOT_TS3_SERVER_PASSWORD=
+# TSBOT_TS3_CHANNEL_PASSWORD=
 
 # 后端服务配置
 TSBOT_HOST=127.0.0.1
 TSBOT_PORT=8009
 TSBOT_VOICE_GRPC_ADDR=127.0.0.1:50051
+TSBOT_COOKIE_KEY=change_me_to_a_random_string
 
 # 前端服务配置
 VITE_DEV_HOST=127.0.0.1
@@ -161,14 +166,34 @@ VITE_LOG_LEVEL=INFO
 # 数据库配置 (可选)
 DATABASE_URL=sqlite:///./tsbot.db
 
-# 网易云音乐配置
-NETEASE_ADMIN_COOKIE=your_admin_cookie_here
+# 网易云音乐配置（仅使用网易云能力时需要）
+TSBOT_NETEASE_API_BASE=http://127.0.0.1:3000/
 ```
+
+说明：
+
+- `voice-service` 主客户端连接已支持 TS6；配置项仍沿用 `TSBOT_TS3_*` 命名。
+- QQ 音乐能力由后端内建提供，不需要额外部署独立的 QQ 音乐 API 服务。
+- QQ 音乐与网易云的管理员 cookie 都通过 Web 控制台或 admin API 写入数据库，并使用 `TSBOT_COOKIE_KEY` 加密存储。
+- 可选的 `TSBOT_TS3_SERVERQUERY_*` 仍是旧式 ServerQuery fallback，不是 TS6 的 HTTP(S) Query。
+
+## 音乐源支持
+
+### 网易云音乐
+
+- 依赖外部 `NeteaseCloudMusicApi` 服务。
+- 需要将该服务地址配置到 `TSBOT_NETEASE_API_BASE`。
+
+### QQ 音乐
+
+- 搜索、歌单、歌词等能力由后端直接提供。
+- 播放链接、用户歌单等登录态能力建议在 Web 控制台中扫码登录 QQ 音乐。
+- 如启用了 `TSBOT_ADMIN_TOKEN`，调用 `/admin/qqmusic/*` 接口时需带 `x-admin-token` 请求头。
 
 ## 访问应用
 
 启动成功后，访问：
-- **前端界面**: http://127.0.0.1:8080 (可通过 VITE_DEV_PORT 环境变量修改端口)
+- **前端界面**: http://127.0.0.1:5173 (可通过 VITE_DEV_PORT 环境变量修改端口)
 - **后端API**: http://127.0.0.1:8009 (可通过 TSBOT_PORT 环境变量修改端口)
 - **API文档**: http://127.0.0.1:8009/docs
 
@@ -203,9 +228,9 @@ NETEASE_ADMIN_COOKIE=your_admin_cookie_here
    make voice-build
    ```
 
-4. **TS3 连接失败**
-   - 检查 TS3 服务器地址和端口
-   - 确认 TS3 Client SDK 已正确安装
+4. **TeamSpeak 连接失败**
+   - 检查 TeamSpeak 服务器地址、端口、频道配置和密码
+   - 默认 Rust `voice-service` 不需要 TS3 Client SDK；只有旧版 C++ 路径才依赖它
    - 检查防火墙设置
 
 ### 日志查看
