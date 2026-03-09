@@ -450,7 +450,9 @@ impl Client {
 			beta.copy_from_slice(&beta_vec);
 
 			// Parse license argument
-			eprintln!("tsproto debug: server license base64={}", base64::encode(&l));
+			if std::env::var("TSBOT_TS_DEBUG_DUMP").ok().as_deref() == Some("1") {
+				eprintln!("tsproto debug: server license base64={}", base64::encode(&l));
+			}
 			let licenses = Licenses::parse(&l).map_err(Error::ParseLicense)?;
 			// Ephemeral key of server
 			let server_ek = licenses.derive_public_key(root).map_err(Error::ParseLicense)?;

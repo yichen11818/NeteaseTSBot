@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use audiopus::coder::Decoder;
-use audiopus::{packet, Channels, SampleRate};
+use audiopus::{packet, Channels, MutSignals, SampleRate};
 use slog::{debug, o, trace, warn, Logger};
 use thiserror::Error;
 use tsproto_packets::packets::{AudioData, CodecType, InAudioBuf};
@@ -162,8 +162,11 @@ impl<T: Copy + Default + Ord> SlidingWindowMinimum<T> {
 impl AudioQueue {
 	fn new(logger: Logger, packet: InAudioBuf) -> Result<Self> {
 		let data = packet.data().data();
-		let last_packet_samples =
-			packet::nb_samples(data.data(), SAMPLE_RATE).map_err(Error::GetPacketSample)?;
+		let last_packet_samples = packet::nb_samples(
+			data.data().try_into().map_err(Error::GetPacketSample)?,
+			SAMPLE_RATE,
+		)
+		.map_err(Error::GetPacketSample)?;
 		if last_packet_samples > MAX_BUFFER_SIZE {
 			return Err(Error::TooManySamples);
 		}
@@ -220,7 +223,10 @@ impl AudioQueue {
 			// End of stream
 			samples = 0;
 		} else {
-			samples = packet::nb_samples(packet.data().data().data(), SAMPLE_RATE)
+			samples = packet::nb_samples(
+				packet.data().data().data().try_into().map_err(Error::GetPacketSample)?,
+				SAMPLE_RATE,
+			)
 				.map_err(Error::GetPacketSample)?;
 			if samples > MAX_BUFFER_SIZE {
 				return Err(Error::TooManySamples);
@@ -270,7 +276,17 @@ impl AudioQueue {
 		let packet_data;
 		let len;
 		if let Some(p) = packet {
-			packet_data = Some(p.packet.data().data().data());
+			packet_data = Some(
+				p.packet
+					.data()
+					.data()
+					.data()
+					.try_into()
+					.map_err(|e| Error::Decode {
+						error: e,
+						packet: Some(p.packet.raw_data().to_vec()),
+					})?,
+			);
 			len = p.samples;
 			self.whispering = matches!(p.packet.data().data(), AudioData::S2CWhisper { .. });
 		} else {
@@ -280,9 +296,15 @@ impl AudioQueue {
 		self.packet_loss_num += 1;
 
 		self.decoded_buffer.resize(self.decoded_pos + len * CHANNEL_NUM, 0.0);
+		let output: MutSignals<'_, f32> = (&mut self.decoded_buffer[self.decoded_pos..])
+			.try_into()
+			.map_err(|e| Error::Decode {
+				error: e,
+				packet: packet.map(|p| p.packet.raw_data().to_vec()),
+			})?;
 		let len = self
 			.decoder
-			.decode_float(packet_data, &mut self.decoded_buffer[self.decoded_pos..], fec)
+			.decode_float(packet_data, output, fec)
 			.map_err(|e| Error::Decode {
 				error: e,
 				packet: packet.map(|p| p.packet.raw_data().to_vec()),

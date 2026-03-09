@@ -147,7 +147,9 @@ impl PacketCodec {
 
 						let item = match InCommandBuf::try_new(dir, c) {
 							Ok(c) => {
-								eprintln!("tsproto debug: incoming command={}", String::from_utf8_lossy(c.data().packet().content()));
+								if std::env::var("TSBOT_TS_DEBUG_DUMP").ok().as_deref() == Some("1") {
+									eprintln!("tsproto debug: incoming command={}", String::from_utf8_lossy(c.data().packet().content()));
+								}
 								// initivexpand2 is the ack for the last init packet
 								if con.is_client
 									&& c.data().packet().content().starts_with(b"initivexpand2 ")

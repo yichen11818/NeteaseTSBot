@@ -4,7 +4,7 @@ TSBot 是一个基于 TeamSpeak 的音乐机器人，包含 Python 后端、Vue 
 
 ## 系统要求
 
-- **操作系统**: Linux (推荐 Ubuntu 20.04+)
+- **操作系统**: Linux（推荐 Ubuntu 20.04+）或 Windows 10/11（推荐 PowerShell 7+）
 - **Python**: 3.8+
 - **Node.js**: 16+
 - **CMake**: 3.16+
@@ -73,19 +73,23 @@ make web-build  # 构建前端
 
 ## 运行项目
 
-### 方法一：使用脚本 (推荐)
+### Linux
+
+#### 方法一：使用脚本（推荐）
 ```bash
 # 启动语音服务
 ./run-voicemake.sh
 
-# 启动后端 (新终端)
+# 启动后端（新终端）
 ./run-backend.sh
 
-# 启动前端 (新终端)
+# 启动前端（新终端）
 ./run-web.sh
 ```
 
-### 方法一（远程推荐）：使用 nohup 一键启动/停止（不依赖 screen/yum）
+以上脚本会自动读取项目根目录下的 `tsbot.env`。
+
+#### 方法二（远程推荐）：使用 nohup 一键启动/停止（不依赖 screen/yum）
 ```bash
 # 第一次使用需要赋予执行权限
 chmod +x ./nohup-start.sh ./nohup-stop.sh ./nohup-status.sh
@@ -100,7 +104,7 @@ chmod +x ./nohup-start.sh ./nohup-stop.sh ./nohup-status.sh
 ./nohup-status.sh
 ```
 
-### 方法二：手动启动
+#### 方法三：手动启动
 
 #### 1. 启动语音服务
 ```bash
@@ -134,6 +138,62 @@ npm --prefix web run build
 npm --prefix web run preview
 ```
 
+### Windows（PowerShell）
+
+Windows 下建议先启动后端和前端；如需真正播放音频，再补齐语音服务依赖并启动 `voice-service`。
+
+#### 1. 复制环境配置
+```powershell
+Copy-Item tsbot.env.example tsbot.env
+# 编辑 tsbot.env，填写 TeamSpeak、cookie、音乐源等配置
+```
+
+#### 2. 安装后端依赖
+```powershell
+python -m venv backend\.venv
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+```
+
+#### 3. 安装前端依赖
+```powershell
+npm.cmd --prefix web install
+```
+
+#### 4. 启动后端与前端
+分别打开两个 PowerShell 窗口执行：
+
+```powershell
+.\run-backend.ps1
+```
+
+```powershell
+.\run-web.ps1
+```
+
+这两个脚本会自动读取项目根目录下的 `tsbot.env`。
+
+#### 5. 启动语音服务
+打开第三个 PowerShell 窗口执行：
+
+```powershell
+.\run-voicemake.ps1
+```
+
+`run-voicemake.ps1` 在 Windows 上默认使用 `MinGW-w64` 工具链构建 Rust 语音服务，额外需要：
+
+- `Rust` / `cargo`
+- `CMake`
+- `MinGW-w64`（需提供 `gcc.exe`、`g++.exe`、`mingw32-make.exe`）
+- `ffmpeg` 并加入 `PATH`
+
+如工具未加入 `PATH`，也可以在 `tsbot.env` 中额外配置这些路径：
+
+- `TSBOT_CARGO`
+- `TSBOT_CMAKE`
+- `TSBOT_MINGW_BIN`
+- `TSBOT_FFMPEG`
+
+如果暂时没有这些工具，后端和前端仍然可以正常启动，但播放控制相关接口会因为 gRPC 语音服务未启动而不可用。
 ## 环境变量配置
 
 编辑 `tsbot.env` 文件：

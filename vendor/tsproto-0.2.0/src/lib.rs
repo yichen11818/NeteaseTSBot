@@ -11,6 +11,8 @@
 //! For more info on this project, take a look at the
 //! [tsclientlib README](https://github.com/ReSpeak/tsclientlib).
 
+#![allow(deprecated, mismatched_lifetime_syntaxes)]
+
 use std::fmt;
 use std::num::ParseIntError;
 

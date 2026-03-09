@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -36,6 +37,8 @@ pub mod tsbot {
 
 use tsbot::voice::v1 as voicev1;
 use voicev1::voice_service_server::{VoiceService, VoiceServiceServer};
+
+static DIRECT_DESCRIPTION_UPDATE_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 struct SharedStatus {
@@ -421,7 +424,19 @@ impl VoiceService for VoiceServiceImpl {
             }
         }
 
-        // Send a raw TS3 command: clientupdate client_description=...
+        if !env_flag("TSBOT_TS3_ALLOW_DIRECT_CLIENTUPDATE_DESCRIPTION") {
+            if !DIRECT_DESCRIPTION_UPDATE_WARNED.swap(true, Ordering::Relaxed) {
+                let msg = "client_description sync skipped: configure ServerQuery or set TSBOT_TS3_ALLOW_DIRECT_CLIENTUPDATE_DESCRIPTION=1";
+                emit_log(&self.events_tx, 3, msg);
+                warn!("{msg}");
+            }
+
+            return Ok(Response::new(voicev1::CommandResponse {
+                ok: true,
+                message: "skipped".to_string(),
+            }));
+        }
+
         let mut cmd = OutCommand::new(Direction::C2S, Flags::empty(), PacketType::Command, "clientupdate");
         cmd.write_arg("client_description", &encoded);
 
@@ -644,6 +659,16 @@ fn get_env(key: &str, def: &str) -> String {
     }
 }
 
+fn env_flag(key: &str) -> bool {
+    matches!(
+        env::var(key)
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
 #[derive(Clone, Debug)]
 struct ServerQueryConfig {
     host: String,
@@ -841,10 +866,15 @@ fn resolve_repo_relative(path: &str) -> PathBuf {
 
     let rel = PathBuf::from(path);
     let mut cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut last;
+    let fallback = cwd.clone();
+
     loop {
-        last = cwd.clone();
-        if cwd.join(".git").exists() {
+        let looks_like_repo_root = cwd.join(".git").exists()
+            || (cwd.join("proto").join("voice.proto").exists()
+                && cwd.join("backend").join("main.py").exists()
+                && cwd.join("web").join("package.json").exists()
+                && cwd.join("voice-service").join("Cargo.toml").exists());
+        if looks_like_repo_root {
             return cwd.join(&rel);
         }
 
@@ -853,7 +883,7 @@ fn resolve_repo_relative(path: &str) -> PathBuf {
         }
     }
 
-    last.join(rel)
+    fallback.join(rel)
 }
 
 async fn ts3_actor(
@@ -896,7 +926,7 @@ async fn ts3_actor(
         .output_muted(false)
         .input_hardware_enabled(true)
         .output_hardware_enabled(true)
-        .log_commands(true);
+        .log_commands(false);
 
     if !server_password.is_empty() {
         opts = opts.password(server_password);
@@ -1399,7 +1429,8 @@ async fn playback_loop(
 
     // Encode/send loop must keep a stable 20ms cadence to prevent TS3 jitter buffer underruns.
     // We decouple ffmpeg reads from the send cadence via a small PCM frame queue.
-    let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(50);
+    let pcm_channel_capacity: usize = if cfg!(windows) { 200 } else { 50 };
+    let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(pcm_channel_capacity);
 
     let encoder = Encoder::new(
         audiopus::SampleRate::Hz48000,
@@ -1451,7 +1482,7 @@ async fn playback_loop(
     });
 
     let mut ticker = tokio::time::interval(frame_duration);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut underruns_total: u64 = 0;
     let mut underruns_window: u64 = 0;
     let mut underruns_consecutive: u64 = 0;
@@ -1459,10 +1490,16 @@ async fn playback_loop(
 
     let mut pcm_buf: VecDeque<Vec<u8>> = VecDeque::new();
 
-    let prebuffer_target: usize = 5;
+    let prebuffer_target: usize = if cfg!(windows) { 15 } else { 5 };
+    let late_frame_wait = if cfg!(windows) {
+        Duration::from_millis(8)
+    } else {
+        Duration::from_millis(3)
+    };
     let mut prebuffering = true;
 
     let mut last_tick = Instant::now();
+    let mut reset_tick_after_pause = false;
     let mut tick_jitter_max_ms: u128 = 0;
     let mut clipped_samples: u64 = 0;
     let mut max_abs_sample: f32 = 0.0;
@@ -1477,6 +1514,7 @@ async fn playback_loop(
         }
 
         while *paused_rx.borrow() {
+            reset_tick_after_pause = true;
             tokio::select! {
                 _ = cancel.cancelled() => { break 'main; }
                 r = paused_rx.changed() => {
@@ -1485,6 +1523,12 @@ async fn playback_loop(
                     }
                 }
             }
+        }
+
+        if reset_tick_after_pause {
+            ticker.reset();
+            last_tick = Instant::now();
+            reset_tick_after_pause = false;
         }
 
         tokio::select! {
@@ -1529,7 +1573,7 @@ async fn playback_loop(
                     got_real_frame = true;
                 }
             } else {
-                match tokio::time::timeout(Duration::from_millis(3), pcm_rx.recv()).await {
+                match tokio::time::timeout(late_frame_wait, pcm_rx.recv()).await {
                     Ok(Some(frame)) => {
                         if frame.len() == frame_bytes {
                             pcm.copy_from_slice(&frame);
@@ -1884,3 +1928,4 @@ async fn main() -> Result<()> {
     info!("Voice service shutdown complete");
     Ok(())
 }
+

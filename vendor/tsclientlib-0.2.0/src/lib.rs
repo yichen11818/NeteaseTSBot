@@ -12,6 +12,7 @@
 //! [Qint]: https://github.com/ReSpeak/Qint
 // Needed for futures on windows.
 #![recursion_limit = "128"]
+#![allow(unused_must_use, mismatched_lifetime_syntaxes)]
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -25,7 +26,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::prelude::*;
-use slog::{debug, info, o, warn, Drain, Logger};
+use slog::{debug, info, o, warn, Drain, Level, Logger};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpStream, UdpSocket};
@@ -1743,8 +1744,21 @@ impl ConnectOptions {
 	/// ```
 	pub fn connect(mut self) -> Result<Connection> {
 		let logger = self.logger.take().unwrap_or_else(|| {
-			let decorator = slog_term::TermDecorator::new().build();
+			let decorator = slog_term::TermDecorator::new().stderr().build();
 			let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+			let level = match std::env::var("TSBOT_TSCLIENTLIB_LOG_LEVEL")
+				.ok()
+				.map(|v| v.trim().to_ascii_lowercase())
+				.as_deref()
+			{
+				Some("trace") => Level::Trace,
+				Some("debug") => Level::Debug,
+				Some("info") => Level::Info,
+				Some("error") => Level::Error,
+				Some("critical") => Level::Critical,
+				_ => Level::Warning,
+			};
+			let drain = drain.filter_level(level).fuse();
 			let drain = slog_async::Async::new(drain).build().fuse();
 
 			slog::Logger::root(drain, o!())
