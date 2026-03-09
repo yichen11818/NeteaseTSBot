@@ -205,6 +205,44 @@ Run in 3 terminals:
 ./run-web.sh
 ```
 
+## Docker Deployment
+
+The repository now includes:
+
+- `docker-compose.yml`
+- `Dockerfile.backend`
+- `Dockerfile.voice-service`
+- `Dockerfile.web`
+
+### 1) Prepare env file
+
+```bash
+cp tsbot.env.example tsbot.env
+```
+
+If your `NeteaseCloudMusicApi` runs on the host machine, set:
+
+- `TSBOT_NETEASE_API_BASE=http://host.docker.internal:3000/`
+
+### 2) Build and run
+
+```bash
+docker compose up -d --build
+```
+
+### 3) Inspect
+
+```bash
+docker compose ps
+docker compose logs -f backend
+```
+
+### 4) Stop
+
+```bash
+docker compose down
+```
+
 ## Default Ports
 
 - **voice-service gRPC**: `127.0.0.1:50051`

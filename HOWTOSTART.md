@@ -194,6 +194,48 @@ npm.cmd --prefix web install
 - `TSBOT_FFMPEG`
 
 如果暂时没有这些工具，后端和前端仍然可以正常启动，但播放控制相关接口会因为 gRPC 语音服务未启动而不可用。
+## Docker 运行
+
+项目根目录已提供：
+
+- `docker-compose.yml`
+- `Dockerfile.backend`
+- `Dockerfile.voice-service`
+- `Dockerfile.web`
+
+### 1. 准备配置
+
+```bash
+cp tsbot.env.example tsbot.env
+```
+
+> 如果 `NeteaseCloudMusicApi` 跑在宿主机，请将 `TSBOT_NETEASE_API_BASE` 配置为 `http://host.docker.internal:3000/`。
+
+### 2. 构建并启动
+
+```bash
+docker compose up -d --build
+```
+
+### 3. 查看运行状态
+
+```bash
+docker compose ps
+docker compose logs -f
+```
+
+### 4. 停止并清理容器
+
+```bash
+docker compose down
+```
+
+默认端口映射：
+
+- `50051:50051`（voice-service gRPC）
+- `8009:8009`（backend）
+- `5173:5173`（web）
+
 ## 环境变量配置
 
 编辑 `tsbot.env` 文件：
