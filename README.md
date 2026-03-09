@@ -205,6 +205,45 @@ chmod +x ./nohup-start.sh ./nohup-stop.sh ./nohup-status.sh
 ./run-web.sh
 ```
 
+## Docker 部署（新增）
+
+### 1) 准备环境变量
+
+```bash
+cp tsbot.env.example tsbot.env
+```
+
+至少确认以下配置：
+
+- `TSBOT_TS3_HOST` / `TSBOT_TS3_PORT` / `TSBOT_TS3_CHANNEL_ID`
+- `TSBOT_COOKIE_KEY`
+- `TSBOT_NETEASE_API_BASE`（如果你在宿主机跑 NeteaseCloudMusicApi，可设为 `http://host.docker.internal:3000/`）
+
+### 2) 构建并启动
+
+```bash
+docker compose up -d --build
+```
+
+### 3) 查看状态与日志
+
+```bash
+docker compose ps
+docker compose logs -f backend
+```
+
+### 4) 停止
+
+```bash
+docker compose down
+```
+
+Compose 默认会启动 3 个服务：
+
+- `voice-service`（50051）
+- `backend`（8009）
+- `web`（5173）
+
 ## 默认端口
 
 - **voice-service gRPC**: `127.0.0.1:50051`

@@ -1,0 +1,13 @@
+.git
+.gitignore
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/*.pyc
+backend/.venv
+web/node_modules
+voice-service/target
+logs
+data
+*.db
+*.log
