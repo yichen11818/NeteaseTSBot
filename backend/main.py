@@ -344,31 +344,24 @@ async def _play_queue_item_internal(item_id: int, *, requested_by: str) -> bool:
             return False
 
         notice = ""
-        duration_ms: int | None = None
+        duration_ms: int | None = item.duration
         artist = str(item.artist or "")
-        album = ""
-        artwork_url = ""
+        album = str(item.album or "")
+        artwork_url = str(item.cover_url or "")
+        source_url = str(item.source_url or "")
         if item.track_id.startswith("netease:"):
             cookie = _get_admin_cookie(session)
             song_id = item.track_id.split(":", 1)[1]
-            notice, duration_ms, artist2, album2, artwork2 = await _netease_notice_and_duration(song_id, cookie)
-            if artist2:
-                artist = artist2
-            album = album2
-            artwork_url = artwork2
+            source_url, _trial, notice, duration_ms, artist, album, artwork_url = await _resolve_netease_playback_payload(
+                song_id=song_id,
+                cookie=cookie,
+                artist=artist,
+                album=album,
+                artwork_url=artwork_url,
+                duration_ms=duration_ms,
+            )
 
-            # Re-resolve a fresh URL at play time to avoid CDN "expired url".
-            data = await netease.song_url(song_id=song_id, cookie=cookie)
-            try:
-                url = _resolve_netease_song_url(data)
-            except HTTPException as e:
-                if e.status_code == 402:
-                    trial_data = await netease.song_url(song_id=song_id, cookie=cookie, br=128000)
-                    url = _resolve_netease_song_url(trial_data)
-                else:
-                    raise
-
-            item.source_url = url
+            item.source_url = source_url
             item.album = album
             item.duration = duration_ms
             item.cover_url = artwork_url
@@ -377,6 +370,8 @@ async def _play_queue_item_internal(item_id: int, *, requested_by: str) -> bool:
 
             session.add(item)
             session.commit()
+        else:
+            item.source_url = source_url
 
         await _set_now_playing_queue_item(
             int(item.id),
@@ -392,6 +387,9 @@ async def _play_queue_item_internal(item_id: int, *, requested_by: str) -> bool:
             track_id=item.track_id,
             title=item.title,
             artist=item.artist,
+            album=item.album,
+            duration=item.duration,
+            cover_url=item.cover_url,
             source_url=item.source_url,
             requested_by=requested_by,
         )
@@ -1093,6 +1091,61 @@ async def _netease_notice_and_duration(song_id: str, cookie: str) -> tuple[str, 
     return "", dt, artist, album, artwork_url
 
 
+def _netease_notice_for_duration(duration_ms: int | None) -> str:
+    if duration_ms is None:
+        return ""
+    if int(duration_ms) <= 0:
+        return ""
+    if int(duration_ms) <= 30_000:
+        return "该曲为试听版(≤30秒)，可能需要会员"
+    return ""
+
+
+async def _resolve_netease_playback_payload(
+    *,
+    song_id: str,
+    cookie: str,
+    artist: str = "",
+    album: str = "",
+    artwork_url: str = "",
+    duration_ms: int | None = None,
+) -> tuple[str, bool, str, int | None, str, str, str]:
+    resolved_artist = (artist or "").strip()
+    resolved_album = (album or "").strip()
+    resolved_artwork_url = (artwork_url or "").strip()
+    resolved_duration_ms = int(duration_ms) if duration_ms is not None and int(duration_ms) > 0 else None
+    notice = _netease_notice_for_duration(resolved_duration_ms)
+
+    if resolved_duration_ms is None or not resolved_artist or not resolved_album or not resolved_artwork_url:
+        detail_notice, detail_duration_ms, detail_artist, detail_album, detail_artwork_url = await _netease_notice_and_duration(song_id, cookie)
+        if resolved_duration_ms is None:
+            resolved_duration_ms = detail_duration_ms
+        if detail_artist and not resolved_artist:
+            resolved_artist = detail_artist
+        if detail_album and not resolved_album:
+            resolved_album = detail_album
+        if detail_artwork_url and not resolved_artwork_url:
+            resolved_artwork_url = detail_artwork_url
+        if detail_notice:
+            notice = detail_notice
+        elif not notice:
+            notice = _netease_notice_for_duration(resolved_duration_ms)
+
+    data = await netease.song_url(song_id=song_id, cookie=cookie)
+    trial = False
+    try:
+        url = _resolve_netease_song_url(data)
+    except HTTPException as e:
+        if e.status_code == 402:
+            trial_data = await netease.song_url(song_id=song_id, cookie=cookie, br=128000)
+            url = _resolve_netease_song_url(trial_data)
+            trial = True
+        else:
+            raise
+
+    return url, trial, notice, resolved_duration_ms, resolved_artist, resolved_album, resolved_artwork_url
+
+
 @app.get("/netease/song/url")
 async def song_url(id: str, session: Session = Depends(get_session)) -> dict:
     cookie = _get_admin_cookie(session)
@@ -1224,30 +1277,46 @@ async def _enqueue_netease_song(
     artist: str,
     play_now: bool,
     requested_by: str,
+    album: str = "",
+    duration_ms: int | None = None,
+    artwork_url: str = "",
 ) -> tuple[int, bool]:
     session = new_session()
     try:
+        if not play_now:
+            item = QueueItem(
+                track_id=f"netease:{song_id}",
+                title=title,
+                artist=artist,
+                album=album,
+                duration=duration_ms,
+                cover_url=artwork_url,
+                source_url="",
+            )
+            session.add(item)
+            session.commit()
+            _schedule_ts_description_update()
+            return int(item.id), False
+
         cookie = _get_admin_cookie(session)
-        notice, duration_ms, artist2, album, artwork_url = await _netease_notice_and_duration(song_id, cookie)
-        data = await netease.song_url(song_id=song_id, cookie=cookie)
-        trial = False
-        try:
-            url = _resolve_netease_song_url(data)
-        except HTTPException as e:
-            if e.status_code == 402:
-                trial_data = await netease.song_url(song_id=song_id, cookie=cookie, br=128000)
-                url = _resolve_netease_song_url(trial_data)
-                trial = True
-            else:
-                raise
+        url, trial, notice, resolved_duration_ms, resolved_artist, resolved_album, resolved_artwork_url = await _resolve_netease_playback_payload(
+            song_id=song_id,
+            cookie=cookie,
+            artist=artist,
+            album=album,
+            artwork_url=artwork_url,
+            duration_ms=duration_ms,
+        )
+
+        final_artist = resolved_artist or artist
 
         item = QueueItem(
             track_id=f"netease:{song_id}",
             title=title,
-            artist=artist,
-            album=album,
-            duration=duration_ms,
-            cover_url=artwork_url,
+            artist=final_artist,
+            album=resolved_album,
+            duration=resolved_duration_ms,
+            cover_url=resolved_artwork_url,
             source_url=url,
         )
         session.add(item)
@@ -1255,28 +1324,27 @@ async def _enqueue_netease_song(
 
         _schedule_ts_description_update()
 
-        if play_now:
-            await _set_now_playing_queue_item(
-                int(item.id),
-                url,
-                duration_ms=duration_ms,
-                artist=artist2 or artist,
-                album=album,
-                artwork_url=artwork_url,
-            )
-            await voice.play(source_url=url, title=title, requested_by=requested_by, notice=notice)
-            hist = HistoryItem(
-                track_id=item.track_id,
-                title=title,
-                artist=artist,
-                album=album,
-                duration=duration_ms,
-                cover_url=artwork_url,
-                source_url=url,
-                requested_by=requested_by,
-            )
-            session.add(hist)
-            session.commit()
+        await _set_now_playing_queue_item(
+            int(item.id),
+            url,
+            duration_ms=resolved_duration_ms,
+            artist=final_artist,
+            album=resolved_album,
+            artwork_url=resolved_artwork_url,
+        )
+        await voice.play(source_url=url, title=title, requested_by=requested_by, notice=notice)
+        hist = HistoryItem(
+            track_id=item.track_id,
+            title=title,
+            artist=final_artist,
+            album=resolved_album,
+            duration=resolved_duration_ms,
+            cover_url=resolved_artwork_url,
+            source_url=url,
+            requested_by=requested_by,
+        )
+        session.add(hist)
+        session.commit()
 
         return int(item.id), trial
     finally:
@@ -2016,6 +2084,9 @@ class AddQueueNeteaseRequest(BaseModel):
     song_id: str
     title: str
     artist: str
+    album: str = ""
+    duration_ms: int | None = None
+    cover_url: str = ""
     play_now: bool = False
 
 
@@ -2028,6 +2099,9 @@ async def add_queue_netease(req: AddQueueNeteaseRequest) -> dict:
             artist=req.artist,
             play_now=req.play_now,
             requested_by="web",
+            album=req.album,
+            duration_ms=req.duration_ms,
+            artwork_url=req.cover_url,
         )
         return {"ok": True, "id": item_id, "trial": trial}
     except Exception as e:
@@ -2151,6 +2225,9 @@ async def replay_from_history(
             artist=hist_item.artist,
             play_now=play_now,
             requested_by="web_history",
+            album=hist_item.album,
+            duration_ms=hist_item.duration,
+            artwork_url=hist_item.cover_url,
         )
         return {
             "ok": True,
