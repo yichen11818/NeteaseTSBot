@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .crypto import decrypt_text, encrypt_text
@@ -2143,6 +2143,30 @@ def get_queue(session: Session = Depends(get_session)) -> list[dict]:
         }
         for r in rows
     ]
+
+
+@app.delete("/queue")
+async def clear_queue(session: Session = Depends(get_session)) -> dict:
+    global _shuffle_queue, _current_shuffle_index
+
+    removed_count = int(session.execute(select(func.count(QueueItem.id))).scalar() or 0)
+    session.execute(delete(QueueItem))
+    session.commit()
+
+    _shuffle_queue = []
+    _current_shuffle_index = -1
+
+    await _set_now_playing_queue_item(None)
+
+    playback_stopped = False
+    try:
+        await voice.stop()
+        playback_stopped = True
+    except Exception:
+        playback_stopped = False
+
+    _schedule_ts_description_update()
+    return {"ok": True, "removed_count": removed_count, "playback_stopped": playback_stopped}
 
 
 @app.post("/queue")

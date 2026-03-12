@@ -16,6 +16,14 @@
             <RefreshCw :size="16" :class="{ 'animate-spin': loading }" />
             <span class="hidden sm:inline">刷新</span>
           </button>
+          <button
+            @click="clearAllTracks"
+            class="text-sm py-1.5 px-3 rounded-lg border border-red-200 bg-white text-red-600 hover:bg-red-50 hover:text-red-700 transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="loading || !tracks.length"
+          >
+            <Trash2 :size="16" />
+            <span class="hidden sm:inline">全部删除</span>
+          </button>
           <button class="btn-primary text-sm py-1.5 px-3 shadow-sm">
             <Plus :size="16" />
             <span class="hidden sm:inline">添加歌曲</span>
@@ -333,16 +341,41 @@ async function deleteSelected() {
   const ids = Array.from(selectedTracks.value)
   if (!ids.length) return
   try {
-    // Optimistic UI update
-    const previousTracks = [...tracks.value]
     tracks.value = tracks.value.filter(t => !selectedTracks.value.has(t.id))
     selectedTracks.value.clear()
     
     await Promise.all(ids.map(id => apiDelete(`/queue/${id}`)))
   } catch (e: any) {
     error.value = String(e?.message ?? e)
-    // Revert if failed (optional, simplified here)
     void loadTracks()
+  }
+}
+
+async function clearAllTracks() {
+  const total = tracks.value.length
+  if (!total) return
+
+  const confirmed = confirm(`确定要删除播放队列中的全部 ${total} 首歌曲吗？
+
+当前播放中的歌曲也会停止。`)
+  if (!confirmed) {
+    return
+  }
+
+  const previousTracks = [...tracks.value]
+  const previousSelected = new Set(selectedTracks.value)
+  const previousCurrentPlayingId = currentPlayingId.value
+
+  try {
+    tracks.value = []
+    selectedTracks.value.clear()
+    currentPlayingId.value = null
+    await apiDelete('/queue')
+  } catch (e: any) {
+    tracks.value = previousTracks
+    selectedTracks.value = previousSelected
+    currentPlayingId.value = previousCurrentPlayingId
+    error.value = String(e?.message ?? e)
   }
 }
 
