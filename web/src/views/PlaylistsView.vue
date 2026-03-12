@@ -2,7 +2,8 @@
 import { onMounted, ref, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { onBeforeRouteLeave } from 'vue-router'
-import { apiGet, apiPost } from '../api'
+import { apiGet } from '../api'
+import { enqueueNeteaseTracks, summarizeBulkEnqueueFailures } from '../utils/queue'
 import { getFavoritePlaylists, toggleFavoritePlaylist } from '../utils/favorites'
 import { 
   ListMusic, 
@@ -131,7 +132,6 @@ async function addPlaylistToQueue(playlist: any) {
   status.value = ''
   
   try {
-    // 获取歌单详情
     const detailRes = await apiGet<any>(`/netease/playlist/${playlist.id}/detail`)
     const tracks = detailRes?.playlist?.tracks || []
     
@@ -139,38 +139,33 @@ async function addPlaylistToQueue(playlist: any) {
       error.value = '歌单为空或无法获取歌曲'
       return
     }
-    
-    // 弹窗确认
-    const songsToAdd = tracks.slice(0, 5)
-    const confirmed = confirm(`确定要将歌单《${playlist.name}》的前 ${songsToAdd.length} 首歌曲添加到播放队列吗？\n\n歌单共有 ${tracks.length} 首歌曲，将添加前 ${songsToAdd.length} 首。`)
+
+    const confirmed = confirm(
+      `确定要将歌单《${playlist.name}》的全部 ${tracks.length} 首歌曲添加到播放队列吗？
+
+歌单较大时可能需要一点时间，请耐心等待。`,
+    )
     
     if (!confirmed) {
       return
     }
-    
-    let addedCount = 0
-    
-    for (const track of songsToAdd) {
-      try {
-        const artist = (track.ar || track.artists || []).map((a: any) => a.name).join(', ')
-        await apiPost('/queue/netease', {
-          song_id: String(track.id),
-          title: track.name,
-          artist,
-          play_now: false,
-        })
-        addedCount++
-      } catch (e) {
-        const msg = String((e as any)?.message ?? e)
-        console.error('Failed to add track:', e)
-        alert(`点歌失败: ${msg}`)
-      }
+
+    const result = await enqueueNeteaseTracks(tracks, {
+      onProgress(current, total, title) {
+        status.value = `正在添加 ${current}/${total}：${title}`
+      },
+    })
+
+    if (result.failed.length > 0) {
+      error.value = `有 ${result.failed.length} 首歌曲添加失败：${summarizeBulkEnqueueFailures(result.failed)}`
     }
-    
-    status.value = `已添加 ${addedCount} 首歌曲到播放队列`
+
+    status.value = result.failed.length > 0
+      ? `已添加 ${result.addedCount} 首歌曲到播放队列，${result.failed.length} 首失败`
+      : `已添加 ${result.addedCount} 首歌曲到播放队列`
     setTimeout(() => {
       status.value = ''
-    }, 3000)
+    }, 5000)
   } catch (e: any) {
     error.value = String(e?.message ?? e)
   }

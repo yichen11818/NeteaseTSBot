@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiGet, apiPost } from '../api'
+import { buildNeteaseQueuePayload, enqueueNeteaseTracks, summarizeBulkEnqueueFailures } from '../utils/queue'
 import { 
   ArrowLeft, 
   Play, 
@@ -84,37 +85,40 @@ async function loadPlaylistDetail() {
 
 async function playAll() {
   if (!tracks.value.length) return
-  
-  // Apply a limit to avoid overwhelming the queue if the playlist is huge
-  const tracksToPlay = tracks.value.slice(0, 20)
-  
-  // 弹窗确认
-  const confirmed = confirm(`确定要将歌单《${playlist.value?.name || '未知歌单'}》的前 ${tracksToPlay.length} 首歌曲添加到播放队列并开始播放吗？\n\n歌单共有 ${tracks.value.length} 首歌曲，将添加前 ${tracksToPlay.length} 首。`)
+
+  error.value = ''
+  status.value = ''
+
+  const confirmed = confirm(
+    `确定要将歌单《${playlist.value?.name || '未知歌单'}》的全部 ${tracks.value.length} 首歌曲添加到播放队列并开始播放吗？
+
+第一首会立即开始播放，其余歌曲将依次加入队列。`,
+  )
   
   if (!confirmed) {
     return
   }
-  
-  let addedCount = 0
-  
-  for (const track of tracksToPlay) {
-    await enqueue(track, addedCount === 0) // Play the first one immediately
-    addedCount++
+
+  const result = await enqueueNeteaseTracks(tracks.value, {
+    playFirst: true,
+    onProgress(current, total, title) {
+      status.value = `正在添加 ${current}/${total}：${title}`
+    },
+  })
+
+  if (result.failed.length > 0) {
+    error.value = `有 ${result.failed.length} 首歌曲添加失败：${summarizeBulkEnqueueFailures(result.failed)}`
   }
   
-  status.value = `已添加 ${addedCount} 首歌曲到播放队列`
-  setTimeout(() => status.value = '', 3000)
+  status.value = result.failed.length > 0
+    ? `已添加 ${result.addedCount} 首歌曲到播放队列，${result.failed.length} 首失败`
+    : `已添加 ${result.addedCount} 首歌曲到播放队列`
+  setTimeout(() => status.value = '', 5000)
 }
 
 async function enqueue(track: any, playNow: boolean = false) {
   try {
-    const artist = (track.ar || track.artists || []).map((a: any) => a.name).join(', ')
-    await apiPost('/queue/netease', {
-      song_id: String(track.id),
-      title: track.name,
-      artist,
-      play_now: playNow,
-    })
+    await apiPost('/queue/netease', buildNeteaseQueuePayload(track, playNow))
     
     if (!status.value) { // Don't overwrite bulk status
       status.value = `已添加 "${track.name}" 到队列${playNow ? ' (正在播放)' : ''}`

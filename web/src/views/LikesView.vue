@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { apiGet, apiPost } from '../api'
+import { buildNeteaseQueuePayload } from '../utils/queue'
 import { 
   Heart, 
   Play, 
@@ -147,13 +148,7 @@ async function loadMore() {
 
 async function playTrack(song: any) {
   try {
-    const artist = (song.ar || []).map((a: any) => a.name).join(', ')
-    await apiPost('/queue/netease', {
-      song_id: String(song.id),
-      title: song.name,
-      artist,
-      play_now: true,
-    })
+    await apiPost('/queue/netease', buildNeteaseQueuePayload(song, true))
   } catch (e: any) {
     const msg = String(e?.message ?? e)
     error.value = msg
@@ -163,13 +158,7 @@ async function playTrack(song: any) {
 
 async function addToQueue(song: any) {
   try {
-    const artist = (song.ar || []).map((a: any) => a.name).join(', ')
-    await apiPost('/queue/netease', {
-      song_id: String(song.id),
-      title: song.name,
-      artist,
-      play_now: false,
-    })
+    await apiPost('/queue/netease', buildNeteaseQueuePayload(song, false))
   } catch (e: any) {
     const msg = String(e?.message ?? e)
     error.value = msg

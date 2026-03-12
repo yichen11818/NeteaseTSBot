@@ -11,6 +11,7 @@ import {
 } from 'lucide-vue-next'
 import EmptyState from '../components/EmptyState.vue'
 import { apiPost } from '../api'
+import { buildNeteaseQueuePayload } from '../utils/queue'
 import {
   getFavoritePlaylists,
   getFavoriteSongs,
@@ -52,13 +53,7 @@ function formatDuration(durationMs?: number): string {
 
 async function playSong(song: FavoriteSong) {
   try {
-    const artist = (song.ar || []).map((a) => a.name).join(', ')
-    await apiPost('/queue/netease', {
-      song_id: String(song.id),
-      title: song.name,
-      artist,
-      play_now: true,
-    })
+    await apiPost('/queue/netease', buildNeteaseQueuePayload(song, true))
   } catch (e: any) {
     const msg = String(e?.message ?? e)
     error.value = msg
@@ -68,13 +63,7 @@ async function playSong(song: FavoriteSong) {
 
 async function addToQueue(song: FavoriteSong) {
   try {
-    const artist = (song.ar || []).map((a) => a.name).join(', ')
-    await apiPost('/queue/netease', {
-      song_id: String(song.id),
-      title: song.name,
-      artist,
-      play_now: false,
-    })
+    await apiPost('/queue/netease', buildNeteaseQueuePayload(song, false))
   } catch (e: any) {
     const msg = String(e?.message ?? e)
     error.value = msg
