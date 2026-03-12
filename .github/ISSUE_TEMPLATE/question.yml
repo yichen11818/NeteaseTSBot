@@ -1,0 +1,61 @@
+name: Usage question
+description: 提交使用、部署、配置或排障相关问题
+title: "[Question] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提问前建议先阅读 `README.md`、`README.en.md`、`HOWTOSTART.md` 和相关日志说明。
+  - type: dropdown
+    id: topic
+    attributes:
+      label: 问题类型
+      options:
+        - deployment
+        - configuration
+        - backend API
+        - voice-service
+        - web UI
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: 你想达成什么目标？
+      placeholder: 例如：希望在 Docker 环境下连接 TS6 并启用 Web 控制台
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: 你已经尝试过什么？
+      placeholder: 已按文档执行的步骤、做过的排查、参考过的配置
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      placeholder: |
+        - OS:
+        - Deployment:
+        - Python / Node / Rust:
+        - Relevant env vars:
+    validations:
+      required: true
+  - type: textarea
+    id: errors
+    attributes:
+      label: 报错信息 / 日志 / 截图
+      description: 可粘贴脱敏后的日志或附图
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已阅读相关文档并检索现有 Issue
+          required: true
+        - label: 我已移除日志和配置中的敏感信息
+          required: true

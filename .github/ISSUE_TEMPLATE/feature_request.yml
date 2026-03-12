@@ -1,0 +1,54 @@
+name: Feature request
+description: 提交新功能、增强能力或产品改进建议
+title: "[Feature] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量说明真实使用场景和当前痛点，帮助维护者判断优先级与实现方式。
+  - type: dropdown
+    id: component
+    attributes:
+      label: 主要模块
+      options:
+        - backend
+        - voice-service
+        - web
+        - deployment / scripts
+        - docs
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: pain-point
+    attributes:
+      label: 当前问题 / 使用痛点
+      placeholder: 现在有什么不方便？为什么现有能力不够？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望方案
+      placeholder: 你希望新增什么行为、接口、按钮或配置？
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案 / 兼容性影响
+      placeholder: 是否考虑过其他方案？会不会影响现有行为？
+  - type: textarea
+    id: scenarios
+    attributes:
+      label: 典型使用场景
+      placeholder: 这个需求最适合在哪些场景下使用？
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，确认该需求尚未被提出或未有明确方案
+          required: true
