@@ -171,6 +171,264 @@ struct AvatarUploadState {
     md5_hex: String,
 }
 
+#[derive(Clone, Debug)]
+struct GreetConfig {
+    enabled: bool,
+    voice: String,
+    speed: u32,
+    pitch: u32,
+    template: String,
+    leave_template: String,
+}
+
+impl GreetConfig {
+    fn from_env() -> Self {
+        let enabled = env_flag("TSBOT_TS3_GREET_ENABLED");
+        let voice = get_env("TSBOT_TS3_GREET_VOICE", "en-us");
+        let speed: u32 = get_env("TSBOT_TS3_GREET_SPEED", "150")
+            .parse::<u32>()
+            .ok()
+            .filter(|n| (60..=400).contains(n))
+            .unwrap_or(150);
+        let pitch: u32 = get_env("TSBOT_TS3_GREET_PITCH", "50")
+            .parse::<u32>()
+            .ok()
+            .filter(|n| (0..=99).contains(n))
+            .unwrap_or(50);
+        let template = get_env(
+            "TSBOT_TS3_GREET_TEMPLATE",
+            "{name} joined the channel",
+        );
+        let leave_template = get_env(
+            "TSBOT_TS3_GREET_LEAVE_TEMPLATE",
+            "{name} left the channel",
+        );
+        Self {
+            enabled,
+            voice,
+            speed,
+            pitch,
+            template,
+            leave_template,
+        }
+    }
+
+    fn render(&self, name: &str) -> String {
+        self.render_with_template(name, &self.template)
+    }
+
+    fn render_leave(&self, name: &str) -> String {
+        self.render_with_template(name, &self.leave_template)
+    }
+
+    /// Apply digit-splitting and safe-character filtering, then substitute into `tpl`.
+    fn render_with_template(&self, name: &str, tpl: &str) -> String {
+        // Split digits so espeak-ng pronounces them one by one ("User 1 2 3" not "User 123").
+        let digit_spaced: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_digit() {
+                    format!(" {} ", c)
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect();
+        let safe_name: String = digit_spaced
+            .chars()
+            .map(|c| match c {
+                '{' | '}' | '\\' | '`' | '$' => ' ',
+                c if c.is_control() => ' ',
+                c => c,
+            })
+            .collect();
+        let trimmed = safe_name.split_whitespace().collect::<Vec<_>>().join(" ");
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        tpl.replace("{name}", &trimmed)
+    }
+}
+
+/// Decide whether the given event represents a client joining the bot's current
+/// channel, and if so spawn a TTS announcement. Idempotent across rapid events
+/// thanks to the cooldown map and known-set.
+#[allow(clippy::too_many_arguments)]
+fn maybe_greet_on_event(
+    e: &events::Event,
+    con: &Connection,
+    greet_config: &GreetConfig,
+    audio_tx: &mpsc::Sender<OutPacket>,
+    events_tx: &broadcast::Sender<voicev1::Event>,
+    known_in_my_channel: &mut std::collections::HashSet<tsclientlib::ClientId>,
+    last_greet_per_client: &mut std::collections::HashMap<tsclientlib::ClientId, Instant>,
+    my_current_channel: &mut Option<tsclientlib::ChannelId>,
+) {
+    if !greet_config.enabled {
+        return;
+    }
+    let st = match con.get_state() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let own_id = st.own_client;
+
+    // Track the bot's own channel from the in-memory state (most reliable).
+    let bot_channel = st
+        .clients
+        .get(&own_id)
+        .map(|c| c.channel);
+    if *my_current_channel != bot_channel {
+        // We moved channels (or just connected). Clear the known set so existing
+        // members of the new channel can be greeted on first appearance, but only
+        // re-greet them once we've actually been in the channel for a moment — we
+        // do this by re-announcing only for clients we haven't greeted yet for this
+        // specific channel id. Simpler: clear, so all clients currently in the new
+        // channel get greeted on the next PropertyAdded or as we discover them via
+        // PropertyChanged below.
+        known_in_my_channel.clear();
+        *my_current_channel = bot_channel;
+    }
+
+    // Pull the candidate client id and decide whether to greet.
+    let candidate: Option<(tsclientlib::ClientId, /* joined my channel */ bool)> = match e {
+        events::Event::PropertyRemoved { id, old, .. } => {
+            // When a client leaves, remove them from known_in_my_channel so they can
+            // be re-greeted on next join. If they were in our channel, also announce.
+            if let events::PropertyId::Client(cid) = id {
+                if *cid != own_id {
+                    known_in_my_channel.remove(cid);
+                    // Announce leave if they were in the bot's channel.
+                    if let events::PropertyValue::Client(client) = old {
+                        if let Some(bot_channel) = bot_channel {
+                            if client.channel == bot_channel {
+                                let name = client.name.trim();
+                                if !name.is_empty() {
+                                    let text = greet_config.render_leave(name);
+                                    if !text.is_empty() {
+                                        let cfg = greet_config.clone();
+                                        let audio_tx = audio_tx.clone();
+                                        let events_tx = events_tx.clone();
+                                        tokio::spawn(async move {
+                                            play_tts_to_ts3(cfg, text, audio_tx, events_tx, CancellationToken::new()).await;
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        events::Event::PropertyAdded { id, extra, .. } => {
+            // Skip subscription-driven appearances (channel subscription reveals
+            // pre-existing clients) and skip our own client.
+            if let events::PropertyId::Client(cid) = id {
+                if *cid == own_id {
+                    None
+                } else if matches!(extra.reason, Some(tsclientlib::Reason::Subscription)) {
+                    None
+                } else if let Some(c) = st.clients.get(cid) {
+                    if bot_channel.is_some() && Some(c.channel) == bot_channel {
+                        Some((cid.clone(), true))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        events::Event::PropertyChanged { id, old, .. } => {
+            if let events::PropertyId::ClientChannel(cid) = id {
+                if *cid == own_id {
+                    // Bot moved channels; nothing to greet here (state already cleared above).
+                    None
+                } else if let Some(new_chan) = bot_channel {
+                    // `old` is a PropertyValue (we need its channel id).
+                    let old_chan: Option<tsclientlib::ChannelId> = match old {
+                        events::PropertyValue::ChannelId(c) => Some(*c),
+                        _ => None,
+                    };
+                    let already_in = old_chan == Some(new_chan);
+                    if already_in {
+                        // They were in our channel. If they also stayed, nothing to do.
+                        // If they left (new != bot_channel), remove from known set so
+                        // they can be re-greeted on next join.
+                        if let Some(c) = st.clients.get(cid) {
+                            if c.channel != new_chan {
+                                known_in_my_channel.remove(cid);
+                            }
+                        }
+                        None
+                    } else {
+                        // They're now in our channel iff their current channel equals bot's.
+                        if let Some(c) = st.clients.get(cid) {
+                            if c.channel == new_chan {
+                                Some((cid.clone(), true))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    let (cid, _joined) = match candidate {
+        Some(v) => v,
+        None => return,
+    };
+
+    // Dedupe / cooldown.
+    if known_in_my_channel.contains(&cid) {
+        return;
+    }
+    if let Some(last) = last_greet_per_client.get(&cid) {
+        if last.elapsed() < Duration::from_secs(3) {
+            return;
+        }
+    }
+
+    let client = match st.clients.get(&cid) {
+        Some(c) => c,
+        None => return,
+    };
+    // Skip server query clients.
+    if matches!(client.client_type, tsclientlib::ClientType::Query { .. }) {
+        return;
+    }
+    let name = client.name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let text = greet_config.render(name);
+    if text.is_empty() {
+        return;
+    }
+
+    known_in_my_channel.insert(cid.clone());
+    last_greet_per_client.insert(cid.clone(), Instant::now());
+
+    let cfg = greet_config.clone();
+    let audio_tx = audio_tx.clone();
+    let events_tx = events_tx.clone();
+    tokio::spawn(async move {
+        play_tts_to_ts3(cfg, text, audio_tx, events_tx, CancellationToken::new()).await;
+    });
+}
+
 fn pick_avatar_file(dir: &Path) -> Option<PathBuf> {
     let mut files: Vec<PathBuf> = Vec::new();
     let rd = fs::read_dir(dir).ok()?;
@@ -478,6 +736,12 @@ impl VoiceService for VoiceServiceImpl {
         &self,
         _req: Request<voicev1::Empty>,
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
+        // Capture title/url before stop_internal clears them
+        let (title, source_url) = {
+            let st = self.status.lock().await;
+            (st.now_playing_title.clone(), st.now_playing_source_url.clone())
+        };
+
         self.stop_internal().await;
 
         {
@@ -487,8 +751,9 @@ impl VoiceService for VoiceServiceImpl {
             st.now_playing_source_url.clear();
         }
 
-        // LogEvent.Level: INFO=2
-        emit_log(&self.events_tx, 2, "stopped");
+        // Emit PlaybackEvent FINISHED so backend can auto-play next track.
+        // PlaybackEvent.Type: FINISHED=2
+        emit_playback(&self.events_tx, 2, title, source_url, "");
 
         Ok(Response::new(voicev1::CommandResponse {
             ok: true,
@@ -977,6 +1242,8 @@ async fn ts3_actor(
     mut audio_rx: mpsc::Receiver<OutPacket>,
     mut notice_rx: mpsc::Receiver<(i32, String)>,
     mut cmd_rx: mpsc::Receiver<OutCommand>,
+    audio_tx_for_greet: mpsc::Sender<OutPacket>,
+    greet_config: GreetConfig,
     events_tx: broadcast::Sender<voicev1::Event>,
     shutdown_token: CancellationToken,
 ) -> Result<()> {
@@ -1062,6 +1329,21 @@ async fn ts3_actor(
     let mut avatar_set_done = false;
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(60);
+
+    // Greet state (persists across reconnects).
+    // known_in_my_channel: client IDs we have announced for in the bot's current channel.
+    // When the bot moves channels we clear this so clients in the new channel get announced.
+    let mut known_in_my_channel: std::collections::HashSet<tsclientlib::ClientId> =
+        std::collections::HashSet::new();
+    let mut last_greet_per_client: std::collections::HashMap<
+        tsclientlib::ClientId,
+        Instant,
+    > = std::collections::HashMap::new();
+    let mut my_current_channel: Option<tsclientlib::ChannelId> = None;
+
+    if greet_config.enabled {
+        info!("greet feature enabled");
+    }
 
     'outer: loop {
         if shutdown_token.is_cancelled() {
@@ -1197,47 +1479,63 @@ async fn ts3_actor(
                                 }
 
                                 for e in evts {
-                                    if let events::Event::Message { target, invoker, message } = e {
-                                        let mode = match target {
-                                            MessageTarget::Client(_) | MessageTarget::Poke(_) => 1,
-                                            MessageTarget::Channel => 2,
-                                            MessageTarget::Server => 3,
-                                        };
+                                    // Handle chat messages.
+                                    match &e {
+                                        events::Event::Message { target, invoker, message } => {
+                                            let mode = match target {
+                                                MessageTarget::Client(_) | MessageTarget::Poke(_) => 1,
+                                                MessageTarget::Channel => 2,
+                                                MessageTarget::Server => 3,
+                                            };
 
-                                        let uid = invoker
-                                            .uid
-                                            .as_ref()
-                                            .map(|u| u.as_ref().to_string())
-                                            .unwrap_or_default();
+                                            let uid = invoker
+                                                .uid
+                                                .as_ref()
+                                                .map(|u| u.as_ref().to_string())
+                                                .unwrap_or_default();
 
-                                        let mut avatar_hash = String::new();
-                                        let mut description = String::new();
-                                        if !uid.is_empty() {
-                                            if let Ok(st) = con.get_state() {
-                                                for c in st.clients.values() {
-                                                    if let Some(cuid) = c.uid.as_ref() {
-                                                        if cuid.to_string() == uid {
-                                                            avatar_hash = c.avatar_hash.clone();
-                                                            description = c.description.clone();
-                                                            break;
+                                            let mut avatar_hash = String::new();
+                                            let mut description = String::new();
+                                            if !uid.is_empty() {
+                                                if let Ok(st) = con.get_state() {
+                                                    for c in st.clients.values() {
+                                                        if let Some(cuid) = c.uid.as_ref() {
+                                                            if cuid.to_string() == uid {
+                                                                avatar_hash = c.avatar_hash.clone();
+                                                                description = c.description.clone();
+                                                                break;
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
-                                        }
 
-                                        let _ = events_tx.send(voicev1::Event {
-                                            unix_ms: now_unix_ms(),
-                                            payload: Some(voicev1::event::Payload::Chat(voicev1::ChatEvent {
-                                                target_mode: mode,
-                                                invoker_unique_id: uid,
-                                                invoker_name: invoker.name,
-                                                message,
-                                                invoker_avatar_hash: avatar_hash,
-                                                invoker_description: description,
-                                            })),
-                                        });
+                                            let _ = events_tx.send(voicev1::Event {
+                                                unix_ms: now_unix_ms(),
+                                                payload: Some(voicev1::event::Payload::Chat(voicev1::ChatEvent {
+                                                    target_mode: mode,
+                                                    invoker_unique_id: uid,
+                                                    invoker_name: invoker.name.clone(),
+                                                    message: message.clone(),
+                                                    invoker_avatar_hash: avatar_hash,
+                                                    invoker_description: description,
+                                                })),
+                                            });
+                                        }
+                                        _ => {}
                                     }
+
+                                    // Handle channel join events for greet.
+                                    maybe_greet_on_event(
+                                        &e,
+                                        &con,
+                                        &greet_config,
+                                        &audio_tx_for_greet,
+                                        &events_tx,
+                                        &mut known_in_my_channel,
+                                        &mut last_greet_per_client,
+                                        &mut my_current_channel,
+                                    );
                                 }
                             }
 
@@ -1881,6 +2179,218 @@ async fn playback_loop(
     Ok(())
 }
 
+struct ChildKillOnDropTts {
+    child: Option<tokio::process::Child>,
+}
+
+impl ChildKillOnDropTts {
+    fn new(child: tokio::process::Child) -> Self {
+        Self { child: Some(child) }
+    }
+    fn child_mut(&mut self) -> &mut tokio::process::Child {
+        self.child.as_mut().expect("child present")
+    }
+}
+
+impl Drop for ChildKillOnDropTts {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.child.take() {
+            let _ = c.start_kill();
+        }
+    }
+}
+
+async fn render_tts_to_wav(config: &GreetConfig, text: &str) -> std::result::Result<PathBuf, String> {
+    let mut tmp = env::temp_dir();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    tmp.push(format!("tsbot_greet_{}_{}.wav", std::process::id(), nanos));
+    let path_str = tmp.to_string_lossy().to_string();
+
+    let status = tokio::process::Command::new("espeak-ng")
+        .arg("-v").arg(&config.voice)
+        .arg("-s").arg(config.speed.to_string())
+        .arg("-p").arg(config.pitch.to_string())
+        .arg("-w").arg(&path_str)
+        .env("LANG", "C.UTF-8")
+        .arg(text)
+        .status()
+        .await
+        .map_err(|e| format!("espeak-ng spawn failed: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("espeak-ng exited with {:?}", status.code()));
+    }
+    if !tmp.exists() {
+        return Err("espeak-ng produced no output file".to_string());
+    }
+    Ok(tmp)
+}
+
+async fn play_tts_to_ts3(
+    config: GreetConfig,
+    text: String,
+    ts3_audio_tx: mpsc::Sender<OutPacket>,
+    events_tx: broadcast::Sender<voicev1::Event>,
+    cancel: CancellationToken,
+) {
+    let log_msg = format!("greet: rendering '{}'", text);
+    info!("{log_msg}");
+    emit_log(&events_tx, 2, log_msg);
+
+    let wav_path = match render_tts_to_wav(&config, &text).await {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("greet espeak-ng failed: {e}");
+            warn!("{msg}");
+            emit_log(&events_tx, 3, msg);
+            return;
+        }
+    };
+
+    let mut ffmpeg = tokio::process::Command::new("ffmpeg");
+    ffmpeg
+        .arg("-nostdin")
+        .arg("-loglevel").arg("error")
+        .arg("-hide_banner")
+        .arg("-i").arg(&wav_path)
+        .arg("-f").arg("s16le")
+        .arg("-ar").arg("48000")
+        .arg("-ac").arg("2")
+        .arg("pipe:1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let child = match ffmpeg.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!("greet ffmpeg spawn failed: {e}");
+            warn!("{msg}");
+            emit_log(&events_tx, 3, msg);
+            let _ = tokio::fs::remove_file(&wav_path).await;
+            return;
+        }
+    };
+
+    let mut child = ChildKillOnDropTts::new(child);
+    let mut stdout = match child.child_mut().stdout.take() {
+        Some(s) => s,
+        None => {
+            emit_log(&events_tx, 3, "greet: ffmpeg stdout missing".to_string());
+            let _ = tokio::fs::remove_file(&wav_path).await;
+            return;
+        }
+    };
+
+    if let Some(stderr) = child.child_mut().stderr.take() {
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    info!("tts ffmpeg: {line}");
+                }
+            }
+        });
+    }
+
+    let frame_samples_per_channel = 48000 / 50;
+    let channels = 2usize;
+    let bytes_per_sample = 2usize;
+    let frame_bytes = frame_samples_per_channel * channels * bytes_per_sample;
+    let frame_duration = Duration::from_millis(20);
+
+    let encoder = match Encoder::new(
+        audiopus::SampleRate::Hz48000,
+        audiopus::Channels::Stereo,
+        audiopus::Application::Audio,
+    ) {
+        Ok(e) => e,
+        Err(e) => {
+            let msg = format!("greet opus encoder init failed: {e}");
+            warn!("{msg}");
+            emit_log(&events_tx, 3, msg);
+            let _ = tokio::fs::remove_file(&wav_path).await;
+            return;
+        }
+    };
+    let encoder = encoder;
+
+    let mut pcm = vec![0u8; frame_bytes];
+    let mut float_buf = vec![0f32; frame_samples_per_channel * channels];
+    let mut opus_out = [0u8; 1275];
+
+    let mut sent_packets = 0u32;
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+        match stdout.read_exact(&mut pcm).await {
+            Ok(_) => {
+                for (i, chunk) in pcm.chunks_exact(2).enumerate() {
+                    let s = i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0;
+                    float_buf[i] = s;
+                }
+                match encoder.encode_float(&float_buf, &mut opus_out) {
+                    Ok(out_len) => {
+                        let pkt = OutAudio::new(&AudioData::C2S {
+                            id: 0,
+                            codec: CodecType::OpusMusic,
+                            data: &opus_out[..out_len],
+                        });
+                        if ts3_audio_tx.send(pkt).await.is_err() {
+                            break;
+                        }
+                        sent_packets += 1;
+                    }
+                    Err(e) => {
+                        let msg = format!("greet opus encode failed: {e}");
+                        warn!("{msg}");
+                        emit_log(&events_tx, 3, msg);
+                        break;
+                    }
+                }
+            }
+            Err(_) => {
+                let eos = OutAudio::new(&AudioData::C2S {
+                    id: 0,
+                    codec: CodecType::OpusMusic,
+                    data: &[],
+                });
+                let _ = ts3_audio_tx.send(eos).await;
+                break;
+            }
+        }
+    }
+
+    // Tail of silence so the server jitter buffer doesn't clip the announcement.
+    let tail_frames: usize = 6;
+    let zero_floats = vec![0f32; frame_samples_per_channel * channels];
+    for _ in 0..tail_frames {
+        if cancel.is_cancelled() { break; }
+        match encoder.encode_float(&zero_floats, &mut opus_out) {
+            Ok(out_len) => {
+                let pkt = OutAudio::new(&AudioData::C2S {
+                    id: 0,
+                    codec: CodecType::OpusMusic,
+                    data: &opus_out[..out_len],
+                });
+                if ts3_audio_tx.send(pkt).await.is_err() {
+                    break;
+                }
+                sent_packets += 1;
+            }
+            Err(_) => break,
+        }
+        tokio::time::sleep(frame_duration).await;
+    }
+
+    let _ = tokio::fs::remove_file(&wav_path).await;
+    info!("greet done ({} packets, {} bytes text)", sent_packets, text.len());
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     logger::init_logger();
@@ -1906,8 +2416,28 @@ async fn main() -> Result<()> {
     let ts3_task = {
         let events_tx_clone = events_tx.clone();
         let shutdown_token_clone = shutdown_token.clone();
+        let audio_tx_clone = ts3_audio_tx.clone();
+        let greet_config = GreetConfig::from_env();
+        info!(
+            "greet config: enabled={} voice={} speed={} pitch={} template='{}'",
+            greet_config.enabled,
+            greet_config.voice,
+            greet_config.speed,
+            greet_config.pitch,
+            greet_config.template
+        );
         tokio::spawn(async move {
-            if let Err(e) = ts3_actor(ts3_audio_rx, ts3_notice_rx, ts3_cmd_rx, events_tx_clone, shutdown_token_clone).await {
+            if let Err(e) = ts3_actor(
+                ts3_audio_rx,
+                ts3_notice_rx,
+                ts3_cmd_rx,
+                audio_tx_clone,
+                greet_config,
+                events_tx_clone,
+                shutdown_token_clone,
+            )
+            .await
+            {
                 error!(%e, "ts3 actor exited");
             }
         })
