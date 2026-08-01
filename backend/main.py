@@ -727,6 +727,22 @@ async def _play_queue_item_internal(item_id: int, *, requested_by: str) -> bool:
         session.close()
 
 
+async def _clear_queue() -> int:
+    """Delete all items from the queue. Returns count of items deleted."""
+    global _shuffle_queue, _current_shuffle_index
+
+    session = new_session()
+    try:
+        count = int(session.execute(select(func.count(QueueItem.id))).scalar() or 0)
+        session.execute(delete(QueueItem))
+        session.commit()
+        _shuffle_queue.clear()
+        _current_shuffle_index = -1
+        return count
+    finally:
+        session.close()
+
+
 async def _delete_queue_item(item_id: int) -> None:
     global _shuffle_queue, _current_shuffle_index
     
@@ -3036,10 +3052,10 @@ def _format_help() -> str:
         "fx pan <-1..1> / fx width <0..3> / fx swap <on|off> / fx bass <0..18> / fx reverb <0..1> / fx reset\n"
         "随机|shuffle - toggle shuffle on/off\n"
         "歌单|playlist <关键词> - 搜索并播放歌单\n"
-        "选择|select <1-5> - 选择歌单"
+        "选择|select <1-5> - 选择歌单\n"
+        "清空|clear - 清空播放队列\n"
+        "随机|shuffle - toggle shuffle on/off\n"
     )
-
-
 def _try_parse_song_id(s: str) -> str | None:
     t = (s or "").strip()
     if t.isdigit():
@@ -3421,6 +3437,8 @@ async def _handle_chat_command(invoker_name: str, message: str, *, target_mode: 
         "playlist": "playlist",
         "select": "select",
         "选择": "select",
+        "clear": "clear",
+        "清空": "clear",
     }
 
     cmd = alias_to_cmd.get(head_norm)
@@ -3720,6 +3738,14 @@ async def _handle_chat_command(invoker_name: str, message: str, *, target_mode: 
                 await reply(f"已加载歌单「{pl['name']}」共 {len(added_ids)} 首并开始播放")
             else:
                 await reply(f"已加载歌单「{pl['name']}」共 {len(added_ids)} 首到队列")
+            return
+
+        if cmd == "clear":
+            count = await _clear_queue()
+            await _invalidate_play_requests()
+            await _set_now_playing_queue_item(None)
+            await voice.stop()
+            await reply(f"已清空队列（{count} 首）")
             return
 
         if cmd == "shuffle":
