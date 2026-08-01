@@ -3969,8 +3969,12 @@ async def _chat_command_worker() -> None:
                         if ty == 2:
                             item_id = await _take_now_playing_if_match(source_url=src)
                             if item_id is not None:
-                                await _delete_queue_item(item_id)
-                                await _auto_play_next_from_queue()
+                                if _repeat_mode == "one":
+                                    # Repeat-one: re-play the same track without deleting it
+                                    await _play_queue_item_internal(item_id, requested_by="auto")
+                                else:
+                                    await _delete_queue_item(item_id)
+                                    await _auto_play_next_from_queue()
                         if ty == 3:
                             item_id = await _take_now_playing_if_match(source_url=src)
                             if item_id is not None:
