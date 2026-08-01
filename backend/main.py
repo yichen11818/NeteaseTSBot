@@ -3792,6 +3792,19 @@ async def _handle_chat_command(invoker_name: str, message: str, *, target_mode: 
             await reply("搜索结果(可直接用 add/play + 歌曲ID):\n" + "\n".join(lines))
             return
 
+        if cmd == "play" and not arg:
+            session = new_session()
+            try:
+                row = session.execute(select(QueueItem).order_by(QueueItem.id.asc()).limit(1)).scalar_one_or_none()
+            finally:
+                session.close()
+            if not row:
+                await reply("队列为空")
+                return
+            await _auto_play_next_from_queue()
+            await reply(f"开始播放: #{row.id} {row.title} - {row.artist}")
+            return
+
         if cmd in ("add", "play"):
             if not arg:
                 await reply(f"用法: {cmd} <歌曲ID|关键词>")
