@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+package tsbot.voice.v1;
+
+message Empty {}
+
+service VoiceService {
+  rpc Ping(Empty) returns (PingResponse);
+
+  rpc Play(PlayRequest) returns (CommandResponse);
+  rpc Pause(Empty) returns (CommandResponse);
+  rpc Resume(Empty) returns (CommandResponse);
+  rpc Seek(SeekRequest) returns (CommandResponse);
+  rpc Stop(Empty) returns (CommandResponse);
+  rpc Skip(Empty) returns (CommandResponse);
+
+  rpc SendNotice(NoticeRequest) returns (CommandResponse);
+
+  rpc SetClientDescription(SetClientDescriptionRequest) returns (CommandResponse);
+
+  rpc SetVolume(SetVolumeRequest) returns (CommandResponse);
+  rpc GetStatus(Empty) returns (StatusResponse);
+
+  rpc SetAudioFx(SetAudioFxRequest) returns (CommandResponse);
+  rpc GetAudioFx(Empty) returns (AudioFxResponse);
+
+  rpc SubscribeEvents(SubscribeRequest) returns (stream Event);
+}
+
+message PingResponse {
+  string version = 1;
+}
+
+message PlayRequest {
+  string source_url = 1;
+  string title = 2;
+  string requested_by = 3;
+  string notice = 4;
+}
+
+message SeekRequest {
+  double time = 1;
+}
+
+message SetVolumeRequest {
+  int32 volume_percent = 1;
+}
+
+message CommandResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message NoticeRequest {
+  string message = 1;
+  int32 target_mode = 2;
+}
+
+message SetClientDescriptionRequest {
+  string description = 1;
+}
+
+message StatusResponse {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_IDLE = 1;
+    STATE_PLAYING = 2;
+    STATE_PAUSED = 3;
+    STATE_BUFFERING = 4;
+    STATE_ERROR = 5;
+  }
+
+  State state = 1;
+  string now_playing_title = 2;
+  string now_playing_source_url = 3;
+  int32 volume_percent = 4;
+}
+
+message SetAudioFxRequest {
+  // -1.0 (full left) .. 0.0 (center) .. +1.0 (full right)
+  optional float pan = 1;
+  // 0.0 (mono) .. 1.0 (normal) .. >1.0 (wider)
+  optional float width = 2;
+  // Swap L/R channels.
+  optional bool swap_lr = 3;
+  optional float bass_db = 4;
+  optional float reverb_mix = 5;
+}
+
+message AudioFxResponse {
+  float pan = 1;
+  float width = 2;
+  bool swap_lr = 3;
+  float bass_db = 4;
+  float reverb_mix = 5;
+}
+
+message SubscribeRequest {
+  bool include_chat = 1;
+  bool include_playback = 2;
+  bool include_log = 3;
+}
+
+message Event {
+  int64 unix_ms = 1;
+
+  oneof payload {
+    ChatEvent chat = 2;
+    PlaybackEvent playback = 3;
+    LogEvent log = 4;
+  }
+}
+
+message ChatEvent {
+  enum TargetMode {
+    TARGET_MODE_UNSPECIFIED = 0;
+    TARGET_MODE_PRIVATE = 1;
+    TARGET_MODE_CHANNEL = 2;
+    TARGET_MODE_SERVER = 3;
+  }
+
+  TargetMode target_mode = 1;
+  string invoker_unique_id = 2;
+  string invoker_name = 3;
+  string message = 4;
+  string invoker_avatar_hash = 5;
+  string invoker_description = 6;
+}
+
+message PlaybackEvent {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_STARTED = 1;
+    TYPE_FINISHED = 2;
+    TYPE_ERROR = 3;
+  }
+
+  Type type = 1;
+  string title = 2;
+  string source_url = 3;
+  string detail = 4;
+}
+
+message LogEvent {
+  enum Level {
+    LEVEL_UNSPECIFIED = 0;
+    LEVEL_DEBUG = 1;
+    LEVEL_INFO = 2;
+    LEVEL_WARN = 3;
+    LEVEL_ERROR = 4;
+  }
+
+  Level level = 1;
+  string message = 2;
+}
