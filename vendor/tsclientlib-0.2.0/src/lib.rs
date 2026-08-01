@@ -295,6 +295,8 @@ enum ConnectionState {
 		con: ConnectedConnection,
 		book: data::Connection,
 	},
+	/// Terminal state: no more events will be produced
+	Finished,
 }
 
 /// A wrapper to poll events from a connection. This is used so a user can drop
@@ -444,33 +446,38 @@ impl Connection {
 	async fn connect(
 		logger: Logger, options: ConnectOptions, is_reconnect: bool,
 	) -> Result<(client::Client, data::Connection)> {
+		eprintln!("[DEBUG] connect called, is_reconnect={}", is_reconnect);
 		if is_reconnect {
+			eprintln!("[DEBUG] connect sleeping 10s for reconnect");
 			tokio::time::sleep(Duration::from_secs(10)).await;
 		}
 
 		let resolved = match &options.address {
-			ServerAddress::SocketAddr(a) => stream::once(future::ok(*a)).left_stream(),
-			ServerAddress::Other(s) => resolver::resolve(logger.clone(), s.into()).right_stream(),
+			ServerAddress::SocketAddr(a) => { eprintln!("[DEBUG] connect using SocketAddr {:?}", a); stream::once(future::ok(*a)).left_stream() }
+			ServerAddress::Other(s) => { eprintln!("[DEBUG] connect resolving {:?}", s); resolver::resolve(logger.clone(), s.into()).right_stream() }
 		};
 		pin_utils::pin_mut!(resolved);
 		let mut resolved: Pin<_> = resolved;
 
 		let mut errors = Vec::new();
 		while let Some(addr) = resolved.next().await {
+			eprintln!("[DEBUG] connect trying addr {:?}", addr);
 			let addr = addr.map_err(|e| Error::ResolveAddress(Box::new(e)))?;
 			match Self::connect_to(&logger, &options, addr).await {
-				Ok(res) => return Ok(res),
+				Ok(res) => { eprintln!("[DEBUG] connect succeeded"); return Ok(res); }
 				Err(e @ Error::IdentityLevel(_)) | Err(e @ Error::ConnectTs(_)) => {
-					// Either increase identity level or the server refused us
-					return Err(e);
+					eprintln!("[DEBUG] connect got IdentityLevel/ConnectTs error, falling through to normal error: {:?}", e);
+					errors.push(e);
+					break;
 				}
 				Err(e) => {
-					info!(logger, "Connecting failed, trying next address";
-						"error" => %e);
+					eprintln!("[DEBUG] connect error, trying next: {:?}", e);
+					info!(logger, "Connecting failed, trying next address"; "error" => %e);
 					errors.push(e);
 				}
 			}
 		}
+		eprintln!("[DEBUG] connect all addresses failed");
 		Err(Error::ConnectFailed { address: options.address.to_string(), errors })
 	}
 
@@ -1131,26 +1138,8 @@ impl Connection {
 					Poll::Ready(Some(Ok(StreamItem::IdentityLevelIncreasing(level))))
 				}
 				Poll::Ready(Err(e)) => {
-					if *reconnect {
-						if let Error::ConnectFailed { errors, .. } = &e {
-							for e in errors {
-								if let Error::Connect(client::Error::TsProto(
-									tsproto::Error::Timeout(reason),
-								)) = e
-								{
-									debug!(self.logger, "Connect failed, reconnecting";
-										"timout" => reason);
-									let fut = Self::connect(
-										self.logger.clone(),
-										self.options.clone(),
-										true,
-									);
-									self.state = ConnectionState::Connecting(Box::pin(fut), true);
-									return self.poll_next(cx);
-								}
-							}
-						}
-					}
+					eprintln!("[DEBUG] poll_next Connecting got error: {:?}, transitioning to Finished", e);
+					self.state = ConnectionState::Finished;
 					Poll::Ready(Some(Err(e)))
 				}
 				Poll::Ready(Ok((client, book))) => {
@@ -1192,6 +1181,7 @@ impl Connection {
 					Poll::Ready(Some(Ok(StreamItem::IdentityLevelIncreased)))
 				}
 			},
+			ConnectionState::Finished => return Poll::Ready(None),
 			ConnectionState::Connected { con, book } => match loop {
 				match con.client.poll_next_unpin(cx) {
 					Poll::Pending => break Poll::Pending,
