@@ -137,7 +137,8 @@
               <div class="w-10 h-10 rounded-md flex-shrink-0 overflow-hidden relative shadow-sm group/cover">
                 <img 
                   v-if="track.artwork" 
-                  :src="track.artwork" 
+                  referrerpolicy="no-referrer"
+                  :src="artworkUrl(track.artwork)"
                   :alt="track.title"
                   class="w-full h-full object-cover"
                 />
@@ -213,6 +214,7 @@
 </template>
 
 <script setup lang="ts">
+import { artworkUrl } from '../utils/artwork'
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { VueDraggable } from 'vue-draggable-plus'
 import { 

@@ -31,7 +31,8 @@
           >
             <img 
               v-if="currentTrack?.artwork" 
-              :src="currentTrack.artwork" 
+              referrerpolicy="no-referrer"
+              :src="artworkUrl(currentTrack.artwork)"
               :alt="currentTrack.title"
               class="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
             />
@@ -285,6 +286,7 @@
 </template>
 
 <script setup lang="ts">
+import { artworkUrl } from '../utils/artwork'
 import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { 

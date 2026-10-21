@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { artworkUrl } from '../utils/artwork'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -235,7 +236,8 @@ onMounted(refresh)
                     <div class="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 shadow-sm bg-gray-100">
                       <img
                         v-if="getSongArtwork(song)"
-                        :src="getSongArtwork(song)"
+                        referrerpolicy="no-referrer"
+                        :src="artworkUrl(getSongArtwork(song))"
                         :alt="song.name"
                         class="w-full h-full object-cover"
                       />
