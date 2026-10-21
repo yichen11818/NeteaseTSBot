@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { artworkUrl } from '../utils/artwork'
 import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { apiGet, apiPost } from '../api'
@@ -50,17 +51,6 @@ async function loadState() {
     // ignore
   }
 }
-
-const backdropStyle = computed(() => {
-  if (!artwork.value) {
-    return {
-      background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
-    }
-  }
-  return {
-    backgroundImage: `url(${artwork.value})`,
-  }
-})
 
 const progressPercent = computed(() => {
   if (!duration.value) return 0
@@ -177,10 +167,15 @@ onUnmounted(() => {
 <template>
   <div class="relative h-full w-full overflow-hidden bg-black">
     <!-- Dynamic fluid background (Simulated Color Extraction) -->
-    <div 
-      class="absolute inset-0 bg-cover bg-center transition-all duration-1000 ease-in-out transform scale-110 filter blur-[100px] opacity-60" 
-      :style="backdropStyle"
-    ></div>
+    <img
+      v-if="artwork"
+      referrerpolicy="no-referrer"
+      :src="artworkUrl(artwork)"
+      alt=""
+      aria-hidden="true"
+      class="absolute inset-0 h-full w-full object-cover transition-all duration-1000 ease-in-out transform scale-110 filter blur-[100px] opacity-60"
+    />
+    <div v-else class="absolute inset-0 bg-gradient-to-br from-[#667eea] to-[#764ba2] opacity-60"></div>
     
     <!-- Gradient Overlay: Shows color at top, fades to solid black at bottom -->
     <div class="absolute inset-0 bg-gradient-to-b from-black/10 via-black/40 to-black"></div>
@@ -231,7 +226,8 @@ onUnmounted(() => {
           <div class="relative aspect-square w-full rounded-2xl shadow-2xl overflow-hidden ring-1 ring-white/10 flex-shrink-0">
             <img 
               v-if="artwork" 
-              :src="artwork" 
+              referrerpolicy="no-referrer"
+              :src="artworkUrl(artwork)"
               :alt="title" 
               class="w-full h-full object-cover transition-transform duration-700 hover:scale-105" 
             />

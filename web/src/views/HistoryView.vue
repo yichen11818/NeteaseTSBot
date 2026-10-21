@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { artworkUrl } from '../utils/artwork'
 import { onMounted, ref } from 'vue'
 import { apiGet, apiPost } from '../api'
 import { 
@@ -198,7 +199,8 @@ onMounted(() => {
                     <div class="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 relative group/cover shadow-sm">
                       <img 
                         v-if="getTrackArtwork(track)" 
-                        :src="getTrackArtwork(track)" 
+                        referrerpolicy="no-referrer"
+                        :src="artworkUrl(getTrackArtwork(track))"
                         :alt="track.title"
                         class="w-full h-full object-cover"
                       />

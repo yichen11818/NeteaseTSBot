@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { artworkUrl } from '../utils/artwork'
 import { ref } from 'vue'
 import { apiGet, apiPost } from '../api'
 import { 
@@ -719,7 +720,8 @@ onMounted(() => {
             <div class="relative aspect-video overflow-hidden bg-gray-100">
               <img 
                 v-if="getSongArtwork(song)"
-                :src="getSongArtwork(song)"
+                referrerpolicy="no-referrer"
+                :src="artworkUrl(getSongArtwork(song))"
                 :alt="getSongTitle(song)"
                 class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
               />
@@ -858,7 +860,8 @@ onMounted(() => {
                     <div class="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 relative group/cover shadow-sm bg-gray-100">
                       <img 
                         v-if="getSongArtwork(song)"
-                        :src="getSongArtwork(song)"
+                        referrerpolicy="no-referrer"
+                        :src="artworkUrl(getSongArtwork(song))"
                         :alt="getSongTitle(song)"
                         class="w-full h-full object-cover"
                       />
