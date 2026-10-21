@@ -791,7 +791,7 @@ body.theme-dark .demo-banner {
 }
 
 body.theme-dark .demo-banner a,
-body.theme-dark .theme-setup-shell .text-blue-600,
-body.theme-dark .theme-setup-shell .text-blue-700 {
+body.theme-dark .theme-settings-shell .text-blue-600,
+body.theme-dark .theme-settings-shell .text-blue-700 {
   color: #93c5fd !important;
 }

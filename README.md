@@ -36,7 +36,7 @@ docker compose -f docker-compose.prebuilt.yml ps
 1. 打开 `http://<服务器地址>:8080`。
 2. 在服务器的 `logs/initial-admin-password.txt` 读取初始密码，以 `admin` 登录并修改密码。
 3. 在“系统配置”填写 TeamSpeak 地址、频道和音乐源配置，点击“应用配置”，确认机器人进入频道。
-   首次登录改密后也可跟随“部署向导”完成配置，使用“应用并检查”分别检查 Voice、TeamSpeak 和音乐接口。
+   首次登录改密后进入设置，按“TeamSpeak 连接”“音乐账号登录”等分类完成配置；每类均附用途说明。
 4. 在 Web 搜索并加入一首歌曲，或在 TeamSpeak 发送 `帮助` 查看聊天指令。
 
 网易云功能需要自行部署 `NeteaseCloudMusicApi`；QQ 音乐和 B 站适配已内建。部分播放和账号功能需要对应平台登录态，实际可播放内容受账号权限及平台限制影响。

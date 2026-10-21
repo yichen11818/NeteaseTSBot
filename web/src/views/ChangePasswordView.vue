@@ -20,9 +20,8 @@ async function submit() {
   }
   submitting.value = true
   try {
-    const firstLogin = authState.must_change_password
     await changePassword(currentPassword.value, newPassword.value)
-    await router.replace(firstLogin ? '/settings?group=setup' : '/settings')
+    await router.replace('/settings')
   } catch (e: any) {
     error.value = String(e?.message || e)
   } finally {
