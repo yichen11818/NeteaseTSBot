@@ -7,6 +7,7 @@ import { logout } from '../auth'
 import { loadAppBranding } from '../appConfig'
 import FloatingToast from '../components/FloatingToast.vue'
 import CookieView from './CookieView.vue'
+import SetupWizard from '../components/SetupWizard.vue'
 import { DEMO_MODE } from '../demoMode'
 
 interface SettingField {
@@ -49,6 +50,7 @@ interface ManagedAsset {
 }
 
 const GROUPS = [
+  ['setup', '部署向导'],
   ['web', 'Web 配置'],
   ['backend', 'Voice 服务'],
   ['music', '音乐接口配置'],
@@ -245,6 +247,14 @@ function clearSecret(field: SettingField) {
   field.configured = false
 }
 
+async function refreshAfterSetup() {
+  try {
+    hydrate(await apiGet<SettingsPayload>('/admin/settings'))
+  } catch (e: any) {
+    showToast(String(e?.message || e), 'error', 8000)
+  }
+}
+
 function selectGroup(group: string) {
   activeGroup.value = group
   error.value = ''
@@ -273,7 +283,7 @@ onBeforeUnmount(() => {
         <p class="text-sm text-gray-500 mt-1">运行配置与服务连接</p>
       </div>
       <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
-        <template v-if="activeGroup !== 'authorization'">
+        <template v-if="activeGroup !== 'authorization' && activeGroup !== 'setup'">
           <button class="btn-secondary settings-header-action" type="button" :disabled="loading || saving || applying" @click="saveConfig">
             <Save :size="17" />
             {{ saving ? '正在保存' : '保存配置' }}
@@ -309,108 +319,107 @@ onBeforeUnmount(() => {
         <div class="max-w-3xl mx-auto">
           <div v-if="loading" class="py-20 text-center text-gray-500">正在加载配置...</div>
           <template v-else-if="payload">
-            <RouterLink to="/setup" class="mb-6 flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 hover:bg-blue-100">
-              <span>首次部署或连接异常？使用部署向导逐步配置并检查连接。</span>
-              <span class="whitespace-nowrap font-semibold">打开向导 →</span>
-            </RouterLink>
-            <div class="flex items-center justify-between mb-6">
-              <h2 class="text-lg font-semibold text-gray-900">{{ GROUPS.find((item) => item[0] === activeGroup)?.[1] }}</h2>
-              <span v-if="activeNeedsVoiceRestart" class="theme-settings-restart text-xs px-2 py-1 rounded bg-amber-50 text-amber-700 border border-amber-200">应用时自动重启 Voice</span>
-            </div>
-
-            <p v-if="DEMO_MODE && activeGroup === 'authorization'" class="text-sm text-gray-500">在线体验不提供账号登录，也不接收 Cookie、Token 或密码。部署后可在这里管理音乐平台授权。</p>
-            <CookieView v-else-if="activeGroup === 'authorization'" embedded />
-
-            <section v-if="activeAssets.length" class="theme-settings-panel bg-white border border-gray-200 rounded-lg divide-y divide-gray-100 mb-6">
-              <div v-for="asset in activeAssets" :key="asset.key" class="p-4 md:p-5 grid md:grid-cols-[240px_minmax(0,1fr)] gap-3 md:gap-6 items-center">
-                <div>
-                  <div class="text-sm font-medium text-gray-800">{{ asset.label }}</div>
-                  <p class="text-xs text-gray-500 mt-1">{{ asset.help }}</p>
-                  <p class="text-xs text-gray-400 mt-1 font-mono break-all">{{ asset.storage_path }}</p>
-                </div>
-                <div class="flex flex-wrap items-center gap-3 min-w-0">
-                  <div class="w-14 h-14 flex-shrink-0 border border-gray-200 rounded-md bg-gray-50 overflow-hidden flex items-center justify-center text-gray-400">
-                    <img v-if="asset.configured" :src="assetPreviewUrl(asset)" :alt="asset.label" class="w-full h-full object-contain" />
-                    <ImageIcon v-else :size="22" />
-                  </div>
-                  <div class="min-w-0 flex-1">
-                    <div class="text-sm text-gray-700">{{ asset.configured ? '已上传' : '尚未上传' }}</div>
-                    <div class="text-xs text-gray-500 mt-1">PNG、JPEG、WebP、GIF，最大 {{ asset.max_size_mb }} MiB</div>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <label :class="['btn-secondary cursor-pointer', assetBusy[asset.key] ? 'opacity-50 pointer-events-none' : '']">
-                      <Upload :size="17" />
-                      {{ asset.configured ? '更换' : '上传' }}
-                      <input type="file" class="sr-only" :accept="asset.accept" :disabled="assetBusy[asset.key]" @change="uploadAsset(asset, $event)" />
-                    </label>
-                    <button v-if="asset.configured" type="button" class="p-2 text-gray-500 hover:text-red-600" :disabled="assetBusy[asset.key]" title="清除图片" @click="clearAsset(asset)">
-                      <Trash2 :size="18" />
-                    </button>
-                  </div>
-                </div>
+            <SetupWizard v-if="activeGroup === 'setup'" @saved="refreshAfterSetup" />
+            <template v-else>
+              <div class="flex items-center justify-between mb-6">
+                <h2 class="text-lg font-semibold text-gray-900">{{ GROUPS.find((item) => item[0] === activeGroup)?.[1] }}</h2>
+                <span v-if="activeNeedsVoiceRestart" class="theme-settings-restart text-xs px-2 py-1 rounded bg-amber-50 text-amber-700 border border-amber-200">应用时自动重启 Voice</span>
               </div>
-            </section>
 
-            <section v-if="activeFields.length" class="theme-settings-panel bg-white border border-gray-200 rounded-lg divide-y divide-gray-100">
-              <div v-for="field in activeFields" :key="field.key" class="p-4 md:p-5 grid md:grid-cols-[240px_minmax(0,1fr)] gap-2 md:gap-6 items-center">
-                <div>
-                  <label :for="field.key" class="text-sm font-medium text-gray-800">{{ field.label }}</label>
-                  <p v-if="field.help" class="text-xs text-gray-500 mt-1">{{ field.help }}</p>
-                  <p v-if="field.sensitive && field.configured" class="text-xs text-green-600 mt-1 flex items-center gap-1"><Check :size="12" /> 已配置</p>
-                </div>
+              <p v-if="DEMO_MODE && activeGroup === 'authorization'" class="text-sm text-gray-500">在线体验不提供账号登录，也不接收 Cookie、Token 或密码。部署后可在这里管理音乐平台授权。</p>
+              <CookieView v-else-if="activeGroup === 'authorization'" embedded />
 
-                <label v-if="field.type === 'boolean'" class="inline-flex items-center gap-3 cursor-pointer">
-                  <input v-model="draft[field.key]" type="checkbox" class="w-4 h-4 accent-blue-600" />
-                  <span class="text-sm text-gray-600">{{ draft[field.key] ? '启用' : '停用' }}</span>
-                </label>
-
-                <select v-else-if="field.type === 'select'" :id="field.key" v-model="draft[field.key]" class="input-field w-full">
-                  <option v-for="option in field.options" :key="option" :value="option">{{ option }}</option>
-                </select>
-
-                <textarea v-else-if="field.type === 'multiline'" :id="field.key" v-model="draft[field.key]" rows="4" class="input-field w-full resize-y" />
-
-                <div v-else-if="field.sensitive" class="flex gap-2 min-w-0">
-                  <div class="relative flex-1 min-w-0">
-                    <input
-                      :id="field.key"
-                      v-model="draft[field.key]"
-                      :type="revealed[field.key] ? 'text' : 'password'"
-                      :placeholder="field.configured ? '留空表示保持当前值' : '尚未配置'"
-                      autocomplete="new-password"
-                      :disabled="DEMO_MODE"
-                      class="input-field w-full pr-10 font-mono text-sm"
-                    />
-                    <button type="button" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700" :title="revealed[field.key] ? '隐藏' : '显示'" @click="revealed[field.key] = !revealed[field.key]">
-                      <EyeOff v-if="revealed[field.key]" :size="17" />
-                      <Eye v-else :size="17" />
-                    </button>
+              <section v-if="activeAssets.length" class="theme-settings-panel bg-white border border-gray-200 rounded-lg divide-y divide-gray-100 mb-6">
+                <div v-for="asset in activeAssets" :key="asset.key" class="p-4 md:p-5 grid md:grid-cols-[240px_minmax(0,1fr)] gap-3 md:gap-6 items-center">
+                  <div>
+                    <div class="text-sm font-medium text-gray-800">{{ asset.label }}</div>
+                    <p class="text-xs text-gray-500 mt-1">{{ asset.help }}</p>
+                    <p class="text-xs text-gray-400 mt-1 font-mono break-all">{{ asset.storage_path }}</p>
                   </div>
-                  <button v-if="field.configured" type="button" class="px-3 text-sm text-red-600 hover:bg-red-50 rounded-md" @click="clearSecret(field)">清除</button>
+                  <div class="flex flex-wrap items-center gap-3 min-w-0">
+                    <div class="w-14 h-14 flex-shrink-0 border border-gray-200 rounded-md bg-gray-50 overflow-hidden flex items-center justify-center text-gray-400">
+                      <img v-if="asset.configured" :src="assetPreviewUrl(asset)" :alt="asset.label" class="w-full h-full object-contain" />
+                      <ImageIcon v-else :size="22" />
+                    </div>
+                    <div class="min-w-0 flex-1">
+                      <div class="text-sm text-gray-700">{{ asset.configured ? '已上传' : '尚未上传' }}</div>
+                      <div class="text-xs text-gray-500 mt-1">PNG、JPEG、WebP、GIF，最大 {{ asset.max_size_mb }} MiB</div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <label :class="['btn-secondary cursor-pointer', assetBusy[asset.key] ? 'opacity-50 pointer-events-none' : '']">
+                        <Upload :size="17" />
+                        {{ asset.configured ? '更换' : '上传' }}
+                        <input type="file" class="sr-only" :accept="asset.accept" :disabled="assetBusy[asset.key]" @change="uploadAsset(asset, $event)" />
+                      </label>
+                      <button v-if="asset.configured" type="button" class="p-2 text-gray-500 hover:text-red-600" :disabled="assetBusy[asset.key]" title="清除图片" @click="clearAsset(asset)">
+                        <Trash2 :size="18" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
+              </section>
 
-                <input
-                  v-else
-                  :id="field.key"
-                  v-model="draft[field.key]"
-                  :type="field.type === 'integer' ? 'number' : field.type === 'url' ? 'url' : 'text'"
-                  :min="field.minimum ?? undefined"
-                  :max="field.maximum ?? undefined"
-                  class="input-field w-full"
-                />
-              </div>
-            </section>
+              <section v-if="activeFields.length" class="theme-settings-panel bg-white border border-gray-200 rounded-lg divide-y divide-gray-100">
+                <div v-for="field in activeFields" :key="field.key" class="p-4 md:p-5 grid md:grid-cols-[240px_minmax(0,1fr)] gap-2 md:gap-6 items-center">
+                  <div>
+                    <label :for="field.key" class="text-sm font-medium text-gray-800">{{ field.label }}</label>
+                    <p v-if="field.help" class="text-xs text-gray-500 mt-1">{{ field.help }}</p>
+                    <p v-if="field.sensitive && field.configured" class="text-xs text-green-600 mt-1 flex items-center gap-1"><Check :size="12" /> 已配置</p>
+                  </div>
 
-            <section v-if="activeGroup === 'backend'" class="mt-6 border-t border-gray-200 pt-5">
-              <h3 class="text-sm font-semibold text-gray-800 mb-3">启动配置（只读）</h3>
-              <dl class="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
-                <div v-for="(value, key) in payload.bootstrap" :key="key" class="min-w-0">
-                  <dt class="text-gray-500">{{ key }}</dt>
-                  <dd class="text-gray-800 font-mono break-all mt-0.5">{{ value }}</dd>
+                  <label v-if="field.type === 'boolean'" class="inline-flex items-center gap-3 cursor-pointer">
+                    <input v-model="draft[field.key]" type="checkbox" class="w-4 h-4 accent-blue-600" />
+                    <span class="text-sm text-gray-600">{{ draft[field.key] ? '启用' : '停用' }}</span>
+                  </label>
+
+                  <select v-else-if="field.type === 'select'" :id="field.key" v-model="draft[field.key]" class="input-field w-full">
+                    <option v-for="option in field.options" :key="option" :value="option">{{ option }}</option>
+                  </select>
+
+                  <textarea v-else-if="field.type === 'multiline'" :id="field.key" v-model="draft[field.key]" rows="4" class="input-field w-full resize-y" />
+
+                  <div v-else-if="field.sensitive" class="flex gap-2 min-w-0">
+                    <div class="relative flex-1 min-w-0">
+                      <input
+                        :id="field.key"
+                        v-model="draft[field.key]"
+                        :type="revealed[field.key] ? 'text' : 'password'"
+                        :placeholder="field.configured ? '留空表示保持当前值' : '尚未配置'"
+                        autocomplete="new-password"
+                        :disabled="DEMO_MODE"
+                        class="input-field w-full pr-10 font-mono text-sm"
+                      />
+                      <button type="button" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700" :title="revealed[field.key] ? '隐藏' : '显示'" @click="revealed[field.key] = !revealed[field.key]">
+                        <EyeOff v-if="revealed[field.key]" :size="17" />
+                        <Eye v-else :size="17" />
+                      </button>
+                    </div>
+                    <button v-if="field.configured" type="button" class="px-3 text-sm text-red-600 hover:bg-red-50 rounded-md" @click="clearSecret(field)">清除</button>
+                  </div>
+
+                  <input
+                    v-else
+                    :id="field.key"
+                    v-model="draft[field.key]"
+                    :type="field.type === 'integer' ? 'number' : field.type === 'url' ? 'url' : 'text'"
+                    :min="field.minimum ?? undefined"
+                    :max="field.maximum ?? undefined"
+                    class="input-field w-full"
+                  />
                 </div>
-              </dl>
-            </section>
+              </section>
 
+              <section v-if="activeGroup === 'backend'" class="mt-6 border-t border-gray-200 pt-5">
+                <h3 class="text-sm font-semibold text-gray-800 mb-3">启动配置（只读）</h3>
+                <dl class="grid sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                  <div v-for="(value, key) in payload.bootstrap" :key="key" class="min-w-0">
+                    <dt class="text-gray-500">{{ key }}</dt>
+                    <dd class="text-gray-800 font-mono break-all mt-0.5">{{ value }}</dd>
+                  </div>
+                </dl>
+              </section>
+
+            </template>
           </template>
           <p v-if="error && !payload" class="text-red-600">{{ error }}</p>
         </div>

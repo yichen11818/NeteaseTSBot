@@ -5,7 +5,7 @@ import MusicPlayer from './components/MusicPlayer.vue'
 import { appConfig } from './appConfig'
 import { applyTheme, getInitialTheme } from './theme'
 import { DEMO_MODE } from './demoMode'
-import { PROJECT_URL, ISSUE_URL, CONTRIBUTE_URL, INSTALL_URL } from './projectLinks'
+import { PROJECT_URL, INSTALL_URL } from './projectLinks'
 import { 
   Home, 
   Music,
@@ -18,10 +18,7 @@ import {
   Moon,
   Sun,
   Menu,
-  X,
-  MessageSquare,
-  GitPullRequest,
-  Compass
+  X
 } from 'lucide-vue-next'
 
 const sidebarOpen = ref(false)
@@ -113,11 +110,6 @@ function toggleTheme() {
                 <Search :size="20" />
                 <span>搜索</span>
               </RouterLink>
-
-              <RouterLink to="/setup" class="nav-item" active-class="nav-item-active" @click="sidebarOpen = false">
-                <Compass :size="20" />
-                <span>部署向导</span>
-              </RouterLink>
               
               <RouterLink 
                 to="/playlists" 
@@ -208,12 +200,6 @@ function toggleTheme() {
               aria-label="项目仓库 / Star"
             >
               <Github :size="20" />
-            </a>
-            <a :href="ISSUE_URL" target="_blank" rel="noopener noreferrer" class="theme-toolbar-btn p-2 text-gray-500 hover:text-blue-600 rounded-lg" title="反馈问题" aria-label="反馈问题">
-              <MessageSquare :size="20" />
-            </a>
-            <a :href="CONTRIBUTE_URL" target="_blank" rel="noopener noreferrer" class="theme-toolbar-btn p-2 text-gray-500 hover:text-blue-600 rounded-lg" title="参与贡献" aria-label="参与贡献">
-              <GitPullRequest :size="20" />
             </a>
             <button
               type="button"

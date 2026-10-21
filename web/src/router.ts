@@ -27,7 +27,7 @@ export const router = createRouter({
     { path: '/login', name: 'login', component: LoginView, meta: { authPage: true } },
     { path: '/change-password', name: 'change-password', component: ChangePasswordView, meta: { authPage: true, requiresAuth: true } },
     { path: '/settings', component: SettingsView, meta: { requiresAuth: true } },
-    { path: '/setup', component: () => import('./views/SetupView.vue'), meta: { requiresAuth: true } },
+    { path: '/setup', redirect: { path: '/settings', query: { group: 'setup' } } },
     { path: '/cookie', redirect: { path: '/settings', query: { group: 'authorization' } } },
     { path: '/lyrics', component: LyricsView },
   ],

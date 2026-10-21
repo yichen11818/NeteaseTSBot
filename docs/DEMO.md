@@ -35,7 +35,7 @@ npm --prefix web run preview:demo
 
 ## 部署向导与连接诊断
 
-真实部署首次登录改密后进入 `/setup`，已有管理员可以从导航或系统配置进入。前两步只保存 TeamSpeak 与网易云 API 配置，最后一步应用所有已保存的配置，等待 Voice 确认配置版本后检查连接。
+真实部署首次登录改密后进入“设置 → 部署向导”（`/settings?group=setup`），已有管理员可以在设置内切换到部署向导。旧 `/setup` 地址自动跳转到该分类。前两步只保存 TeamSpeak 与网易云 API 配置，最后一步应用所有已保存的配置，等待 Voice 确认配置版本后检查连接。
 
 `GET /admin/diagnostics` 仅管理员会话可访问，分别检查数据库、待应用配置、Voice gRPC、TeamSpeak 会话和可选的网易云 API。Voice 检查最多等待 3 秒；音乐 API 使用 4 秒 HTTP 超时，两者并发执行。错误响应不会包含上游异常文本、地址中的凭据或 Cookie。
 

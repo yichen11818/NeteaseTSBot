@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ArrowLeft, ArrowRight, Check, AlertCircle, Compass, Loader2, RefreshCw } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, Check, AlertCircle, Loader2, RefreshCw } from 'lucide-vue-next'
 import { apiGet, apiPut } from '../api'
 import { DEMO_MODE } from '../demoMode'
 import type { DiagnosticReport, SetupSettings } from '../types/settings'
+
+const emit = defineEmits<{ saved: [] }>()
 
 const steps = ['连接 TeamSpeak', '选择音乐源', '应用并检查']
 const step = ref(0)
@@ -34,6 +36,7 @@ async function saveStep() {
   try {
     const selected = Object.fromEntries(visibleFields.value.map(field => [field.key, values.value[field.key]]))
     hydrate(await apiPut<SetupSettings>('/admin/settings', { values: selected, apply: false }))
+    emit('saved')
     step.value += 1
   } catch (e) { error.value = e instanceof Error ? e.message : '配置保存失败' }
   finally { busy.value = false }
@@ -49,6 +52,7 @@ async function applyAndCheck() {
   try {
     const result = await apiPut<SetupSettings>('/admin/settings', { values: {}, apply: true })
     hydrate(result)
+    emit('saved')
     if (result.voice_restart_requested && result.voice_config_revision) {
       message.value = '配置已应用，等待 Voice 使用新配置重启…'
       const deadline = Date.now() + 60000
@@ -71,10 +75,9 @@ async function applyAndCheck() {
 </script>
 
 <template>
-  <div class="theme-setup-shell h-full overflow-y-auto bg-gray-50 pb-8">
-    <div class="mx-auto max-w-3xl px-5 py-8 md:px-8 md:py-10">
-      <div class="flex items-center gap-3 text-blue-600"><Compass :size="24" /><span class="text-sm font-semibold">TSBot 部署向导</span></div>
-      <h1 class="mt-3 text-2xl font-bold text-gray-900 md:text-3xl">让机器人加入你的频道</h1>
+  <section class="theme-setup-shell" aria-label="部署向导">
+    <div>
+      <h2 class="text-2xl font-bold text-gray-900 md:text-3xl">让机器人加入你的频道</h2>
       <p class="mt-2 text-sm leading-6 text-gray-500">准备好 TeamSpeak 地址，按顺序配置并检查连接。</p>
 
       <ol class="my-8 flex gap-3 border-b border-gray-200 pb-5 md:gap-6" aria-label="配置进度">
@@ -86,7 +89,7 @@ async function applyAndCheck() {
       <p v-if="message" role="status" class="mb-5 text-sm leading-6 text-blue-700">{{ message }}</p>
       <p v-if="!settings && busy" class="py-12 text-gray-500">正在加载配置…</p>
       <template v-if="settings">
-        <h2 class="text-lg font-semibold text-gray-900">{{ steps[step] }}</h2>
+        <h3 class="text-lg font-semibold text-gray-900">{{ steps[step] }}</h3>
         <p v-if="step === 0" class="mt-2 text-sm leading-6 text-gray-500">填写语音服务器端口（通常为 9987）。频道 ID 或路径选填其一；都留空则使用默认频道。</p>
         <div v-if="step < 2" class="mt-6 space-y-5">
           <div v-for="field in visibleFields" :key="field.key">
@@ -107,7 +110,7 @@ async function applyAndCheck() {
             <button type="button" class="btn-secondary gap-2" :disabled="busy" @click="runDiagnostics"><RefreshCw :size="16" />重新检查连接</button>
           </div>
           <section v-if="report" class="mt-7" aria-label="连接检查结果" aria-live="polite">
-            <h3 class="font-semibold text-gray-900">{{ report.demo ? '模拟检查结果' : report.ready ? '必要连接已就绪' : '还有连接需要处理' }}</h3>
+            <h4 class="font-semibold text-gray-900">{{ report.demo ? '模拟检查结果' : report.ready ? '必要连接已就绪' : '还有连接需要处理' }}</h4>
             <ul class="mt-3 divide-y divide-gray-200">
               <li v-for="item in report.checks" :key="item.id" class="flex gap-3 py-4">
                 <Check v-if="item.status === 'success'" :size="19" class="mt-0.5 shrink-0 text-green-600" />
@@ -124,5 +127,5 @@ async function applyAndCheck() {
         </div>
       </template>
     </div>
-  </div>
+  </section>
 </template>
