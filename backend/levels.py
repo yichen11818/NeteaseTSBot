@@ -123,15 +123,24 @@ class LevelService:
         if not self.claim(time.time()):
             return
         try:
-            # Rank groups must be badges only. Fail closed even if an administrator
-            # accidentally maps an admin group and forgets the protected list.
-            badge_permissions = {"i_icon_id", "i_group_sort_id", "i_group_show_name_in_tree"}
+            # Only regular server groups may be assigned, never template/query groups.
+            groups = await self.command(client, "servergrouplist")
+            group_types = {int(g["sgid"]): int(g["type"]) for g in groups}
+            if any(group_types.get(group) != 1 for group in self.managed):
+                raise ValueError("Level groups must be regular server groups (type=1)")
+            # Protection thresholds constrain who may modify a group; they do not
+            # grant its members the corresponding powers. Keep capability grants denied.
+            badge_permissions = {
+                "i_icon_id", "i_group_sort_id", "i_group_show_name_in_tree",
+                "i_group_needed_modify_power", "i_group_needed_member_add_power",
+                "i_group_needed_member_remove_power", "b_group_is_permanent",
+            }
             for group in sorted(self.managed):
                 permissions = await self.command(client, "servergrouppermlist", sgid=group,
                                                  **{"-permsid": ""})
                 if any(p.get("permsid") not in badge_permissions
                        and int(p["permvalue"]) != 0 for p in permissions):
-                    raise ValueError("Level groups must contain only badge permissions")
+                    raise ValueError("Level groups must contain only badge/protection permissions")
             clients = await self.command(client, "clientlist", **{"-uid": "", "-times": ""})
             targets = self.account(clients, time.time())
         except Exception:

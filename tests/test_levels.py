@@ -2,7 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -95,7 +95,17 @@ class LevelTests(unittest.TestCase):
             self.assertEqual('secret', request.headers['x-api-key'])
             body = []
             code = 0
-            if command == 'clientlist':
+            if command == 'servergrouplist':
+                body = [{'sgid': str(g), 'type': '1'} for g in (20, 21)]
+            elif command == 'servergrouppermlist':
+                body = [{'permsid': name, 'permvalue': value} for name, value in (
+                    ('i_icon_id', '123'), ('i_group_sort_id', '10'),
+                    ('i_group_show_name_in_tree', '1'),
+                    ('i_group_needed_modify_power', '75'),
+                    ('i_group_needed_member_add_power', '75'),
+                    ('i_group_needed_member_remove_power', '75'),
+                    ('b_group_is_permanent', '1'))]
+            elif command == 'clientlist':
                 self.assertIn('-uid', request.url.params)
                 body = [self.client()]
             elif command == 'servergroupsbyclientid':
@@ -142,6 +152,9 @@ class LevelTests(unittest.TestCase):
         calls = []
         def handler(request):
             calls.append(request.url.path)
+            if request.url.path.endswith('/servergrouplist'):
+                return httpx.Response(200, json={'status': {'code': 0}, 'body': [
+                    {'sgid': '20', 'type': '1'}, {'sgid': '21', 'type': '1'}]})
             return httpx.Response(200, json={'status': {'code': 0}, 'body': [
                 {'permsid': 'i_permission_modify_power', 'permvalue': '75'}]})
         async def run():
@@ -151,7 +164,44 @@ class LevelTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         await self.service.tick(client)
         asyncio.run(run())
-        self.assertEqual(['/1/servergrouppermlist'], calls)
+        self.assertEqual(['/1/servergrouplist', '/1/servergrouppermlist'], calls)
+
+    def test_non_regular_or_missing_groups_rejected_before_mutation(self):
+        for group_type in ('0', '2', '3', None):
+            with self.subTest(group_type=group_type):
+                groups = [{'sgid': '20', 'type': '1'}]
+                if group_type is not None:
+                    groups.append({'sgid': '21', 'type': group_type})
+                command = AsyncMock(return_value=groups)
+                with patch.object(self.service, 'command', command), patch(
+                        'backend.levels.time.time', return_value=1060):
+                    with self.assertRaises(ValueError):
+                        asyncio.run(self.service.tick(None))
+                command.assert_awaited_once_with(None, 'servergrouplist')
+
+    def test_nonzero_capabilities_and_unknown_permissions_rejected(self):
+        for permission in ('i_group_modify_power', 'i_group_member_add_power',
+                           'i_group_member_remove_power', 'i_permission_modify_power',
+                           'b_virtualserver_modify_name', 'unknown_permission'):
+            with self.subTest(permission=permission):
+                command = AsyncMock(side_effect=[
+                    [{'sgid': '20', 'type': '1'}, {'sgid': '21', 'type': '1'}],
+                    [{'permsid': permission, 'permvalue': '75'}]])
+                with patch.object(self.service, 'command', command), patch(
+                        'backend.levels.time.time', return_value=1060):
+                    with self.assertRaises(ValueError):
+                        asyncio.run(self.service.tick(None))
+                self.assertEqual(['servergrouplist', 'servergrouppermlist'],
+                                 [call.args[1] for call in command.await_args_list])
+
+    def test_zero_unknown_permission_allowed(self):
+        command = AsyncMock(side_effect=[
+            [{'sgid': '20', 'type': '1'}, {'sgid': '21', 'type': '1'}],
+            [{'permsid': 'unknown_permission', 'permvalue': '0'}], [], []])
+        with patch.object(self.service, 'command', command), patch(
+                'backend.levels.time.time', return_value=1060):
+            asyncio.run(self.service.tick(None))
+        self.assertEqual('clientlist', command.await_args_list[-1].args[1])
 
 
 if __name__ == '__main__':

@@ -18,7 +18,10 @@ TSBOT_LEVELS_AFK_CHANNELS=9,10
 
 组 ID 均为示例。必须将所有管理员、默认、访客等不能撤销的组加入保护列表，
 只能把专用等级组填入 thresholds。配置冲突时等级任务不启动，音乐服务继续运行。
-等级组仅支持装饰权限（i_icon_id、i_group_sort_id、i_group_show_name_in_tree）；
+等级组必须存在且为普通服务器组（type=1），不能使用模板组或 ServerQuery 组。
+等级组仅支持装饰权限（i_icon_id、i_group_sort_id、i_group_show_name_in_tree）、
+组保护门槛（i_group_needed_modify_power、i_group_needed_member_add_power、
+i_group_needed_member_remove_power）和持久化属性 b_group_is_permanent；
 每轮读取 servergrouppermlist，发现其他非零权限时停止本轮统计和变更，防止误填管理组。
 机器人普通客户端无法自动识别，请明确填写 Unique ID；Query 客户端自动排除。
 AFK 按频道 ID 精确匹配，子频道需要逐一配置。
@@ -30,7 +33,7 @@ TS6 的 `query.http.ip` 应绑定回环地址，或绑定容器私网并在防�
 不要发布 10080/10443 到公网。容器里的 127.0.0.1 指容器自身，应改成受限私网主机名。
 IP allow list 是防洪豁免列表，不能当作访问控制。
 关闭 TS6 WebQuery guest 访问，使用限定虚拟服务器、最小权限、独立 API key。
-只授予读取 clientlist、读取成员组与组权限、管理专用等级组的权限；不要使用 serveradmin key。
+只授予读取 clientlist、servergrouplist、读取成员组与组权限、管理专用等级组的权限；不要使用 serveradmin key。
 若跨主机部署，优先 HTTPS 或加密隧道，代码保留 TLS 证书校验。
 不要把含 key 的环境文件提交到版本库。
 
