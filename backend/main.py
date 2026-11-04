@@ -64,6 +64,7 @@ from .config import settings
 from .logger import logger
 
 app = FastAPI(title="tsbot-backend")
+_levels_task: asyncio.Task | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -332,9 +333,16 @@ def _record_login_failure(request: Request) -> None:
 
 @app.on_event("startup")
 async def _startup() -> None:
+    global _levels_task
     global _chat_task
     global _main_loop
     create_db_and_tables()
+    if settings.levels_enabled and (_levels_task is None or _levels_task.done()):
+        from .levels import LevelService
+        try:
+            _levels_task = asyncio.create_task(LevelService(settings).run())
+        except Exception as exc:
+            logger.error("Level service configuration failed: %s", type(exc).__name__)
 
     bootstrap_session = new_session()
     try:
@@ -365,6 +373,14 @@ async def _startup() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
+    global _levels_task
+    if _levels_task is not None:
+        _levels_task.cancel()
+        try:
+            await _levels_task
+        except asyncio.CancelledError:
+            pass
+        _levels_task = None
     global _chat_task
     if _chat_task is not None:
         _chat_task.cancel()

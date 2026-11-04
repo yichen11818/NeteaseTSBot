@@ -13,6 +13,16 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = 8009
+    levels_enabled: bool = False
+    levels_db: str = "./data/levels.db"
+    levels_webquery_url: str = "http://127.0.0.1:10080"
+    levels_api_key: str = ""
+    levels_server_id: int = 1
+    levels_poll_seconds: int = 60
+    levels_thresholds: str = "{}"  # JSON: cumulative hours -> server group ID
+    levels_protected_groups: str = "6"  # comma separated IDs; include all admin groups
+    levels_excluded_uids: str = ""
+    levels_afk_channels: str = ""
     voice_grpc_addr: str = "127.0.0.1:50051"
     
     cookie_key: str = "dev-cookie-key"
