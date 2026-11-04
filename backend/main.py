@@ -2974,6 +2974,37 @@ def _netease_notice_for_duration(duration_ms: int | None) -> str:
     return ""
 
 
+async def _request_netease_song_url(*, song_id: str, cookie: str, quality_level: str) -> dict:
+    """Retry standard once when automatic quality is rejected by upstream risk control."""
+    normalized = _normalize_netease_quality_level(quality_level, strict=True)
+    requested_level = _resolve_netease_request_level(normalized)
+    levels = (requested_level, "standard") if normalized == "auto" else (requested_level,)
+    for index, level in enumerate(levels):
+        try:
+            data = await netease.song_url_v1(song_id=song_id, cookie=cookie, level=level)
+        except httpx.HTTPStatusError as exc:
+            try:
+                payload = exc.response.json()
+            except ValueError:
+                payload = {}
+            code = payload.get("code") if isinstance(payload, dict) else None
+            if str(code) != "-460":
+                # Do not reflect response bodies, request URLs or credentials to chat/API callers.
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"网易云音乐接口返回 HTTP {exc.response.status_code}，请稍后重试或检查 API 服务",
+                ) from None
+        else:
+            if str(data.get("code")) != "-460":
+                return data
+        if index + 1 < len(levels):
+            logger.warning("网易云高音质请求被风控拒绝 (code=-460)，自动音质回退 standard 一次")
+    raise HTTPException(
+        status_code=503,
+        detail="网易云暂时拒绝播放请求 (code=-460)：网络环境风险，请稍后重试或选择标准音质",
+    )
+
+
 async def _resolve_netease_playback_payload(
     *,
     song_id: str,
@@ -3005,8 +3036,7 @@ async def _resolve_netease_playback_payload(
         elif not notice:
             notice = _netease_notice_for_duration(resolved_duration_ms)
 
-    requested_level = _resolve_netease_request_level(quality_level)
-    data = await netease.song_url_v1(song_id=song_id, cookie=cookie, level=requested_level)
+    data = await _request_netease_song_url(song_id=song_id, cookie=cookie, quality_level=quality_level)
     trial = False
     try:
         url = _resolve_netease_song_url(data)
@@ -3024,8 +3054,7 @@ async def _resolve_netease_playback_payload(
 @app.get("/netease/song/url")
 async def song_url(id: str, level: str = "auto", session: Session = Depends(get_session)) -> dict:
     cookie = _get_admin_cookie(session)
-    requested_level = _resolve_netease_request_level(level)
-    data = await netease.song_url_v1(song_id=id, cookie=cookie, level=requested_level)
+    data = await _request_netease_song_url(song_id=id, cookie=cookie, quality_level=level)
     try:
         url = _resolve_netease_song_url(data)
         return {
@@ -4455,7 +4484,7 @@ async def admin_debug_song_url(request: Request, id: str, level: str = "auto", s
     dt = _resolve_netease_duration_ms(detail)
 
     requested_level = _normalize_netease_quality_level(level, strict=True)
-    data = await netease.song_url_v1(song_id=id, cookie=cookie, level=_resolve_netease_request_level(requested_level))
+    data = await _request_netease_song_url(song_id=id, cookie=cookie, quality_level=requested_level)
     trial = False
     try:
         url = _resolve_netease_song_url(data)
