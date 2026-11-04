@@ -12,6 +12,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -178,6 +179,8 @@ async def api_token_middleware(request: Request, call_next):
     return await call_next(request)
 
 _chat_task: asyncio.Task[None] | None = None
+_bilibili_chat_tasks: set[asyncio.Task] = set()
+_BILIBILI_CHAT_MAX_PENDING = 4
 _current_queue_item_id: int | None = None
 _pending_queue_item_id: int | None = None
 _pending_play_request_generation: int | None = None
@@ -385,6 +388,12 @@ async def _shutdown() -> None:
     if _chat_task is not None:
         _chat_task.cancel()
         _chat_task = None
+    pending = list(_bilibili_chat_tasks)
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    _bilibili_chat_tasks.clear()
     await close_all_bilibili_qr_sessions()
     await voice.close()
 
@@ -3148,6 +3157,8 @@ def _format_help() -> str:
         "搜索|search <keywords> - search songs\n"
         "增加|add <song_id|keywords> - add to queue\n"
         "播放|play [song_id|keywords] - play now; no argument plays the first queue item\n"
+        "b站 <BV号|视频链接> - 立即播放B站音频\n"
+        "点播b站 <BV号|视频链接> - 加入播放队列\n"
         "队列|queue - show queue\n"
         "歌单|playlist <keywords> - search Netease playlists\n"
         "选择|select <number> - add a playlist from the last playlist search\n"
@@ -3520,6 +3531,66 @@ async def _enqueue_bilibili_song(
         session.close()
 
 
+def _parse_bilibili_chat_video_id(arg: str) -> str:
+    value = arg.strip()
+    # TeamSpeak clients may wrap pasted links in URL markup.
+    markup = re.fullmatch(r"\[url(?:=([^\]]+))?\](.*?)\[/url\]", value, re.IGNORECASE)
+    if markup:
+        value = markup.group(1) or markup.group(2)
+    if re.fullmatch(r"BV[0-9A-Za-z]{10}", value):
+        return value
+    try:
+        url = urlsplit(value)
+        if (url.scheme in {"http", "https"} and url.hostname in
+                {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
+                and not url.username and not url.password and url.port in {None, 80, 443}):
+            match = re.fullmatch(r"/video/(BV[0-9A-Za-z]{10})/?", url.path)
+            if match:
+                return match.group(1)
+    except ValueError:
+        pass
+    return ""
+
+
+async def _run_bilibili_chat_request(video_id: str, *, play_now: bool,
+                                      invoker_name: str, target_mode: int) -> None:
+    async def reply(text: str) -> None:
+        await voice.send_notice(text[:700], target_mode=target_mode)
+
+    try:
+        metadata = await _extract_bilibili_video_info(video_id)
+        item_id, _ = await _enqueue_bilibili_song(
+            video_id=video_id, title=str(metadata.get("title") or video_id),
+            artist=str(metadata.get("artist") or ""), album=str(metadata.get("album") or ""),
+            duration_ms=_coerce_positive_int(metadata.get("duration_ms")),
+            artwork_url=str(metadata.get("artwork_url") or ""),
+            play_now=play_now, requested_by=invoker_name,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            text = "B站播放请求已被新的播放或停止指令替代。"
+        elif exc.status_code in {401, 402, 403, 404}:
+            text = "B站视频不可访问，可能已下架、需要登录或存在地区限制，请换一个视频。"
+        elif exc.status_code == 400:
+            text = "B站视频无法点播，请检查 BV 号及视频时长限制。"
+        else:
+            text = "B站音频解析或加载失败，请稍后重试或换一个视频。"
+        await reply(text)
+        return
+    except Exception as exc:
+        logger.warning("Bilibili chat request failed: %s", type(exc).__name__)
+        await reply("B站音频解析或播放失败，请稍后重试或换一个视频。")
+        return
+    action = "已开始播放" if play_now else "已加入队列"
+    await reply(f"B站{action}: #{item_id} {metadata.get('title') or video_id}")
+
+
+def _finish_bilibili_chat_task(task: asyncio.Task) -> None:
+    _bilibili_chat_tasks.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("Bilibili chat task failed: %s", type(task.exception()).__name__)
+
+
 async def _handle_chat_command(
     invoker_name: str,
     message: str,
@@ -3592,6 +3663,8 @@ async def _handle_chat_command(
         "增加": "add",
         "入队": "add",
         "点歌": "add",
+        "b站": "bilibili_play",
+        "点播b站": "bilibili_add",
         "play": "play",
         "p": "play",
         "播放": "play",
@@ -3648,6 +3721,21 @@ async def _handle_chat_command(
         await voice.send_notice(t, target_mode=int(target_mode))
 
     try:
+        if cmd in {"bilibili_play", "bilibili_add"}:
+            video_id = _parse_bilibili_chat_video_id(arg)
+            if not video_id:
+                await reply("用法: b站 <BV号或完整B站视频链接>（立即播放）；点播b站 <BV号或链接>（加入队列）。BV号应为 BV 加 10 位字母或数字。")
+                return
+            if len(_bilibili_chat_tasks) >= _BILIBILI_CHAT_MAX_PENDING:
+                await reply("B站点播任务较多，请稍后再试。")
+                return
+            task = asyncio.create_task(_run_bilibili_chat_request(
+                video_id, play_now=(cmd == "bilibili_play"),
+                invoker_name=invoker_name, target_mode=int(target_mode),
+            ))
+            _bilibili_chat_tasks.add(task)
+            task.add_done_callback(_finish_bilibili_chat_task)
+            return
         if cmd in ("help", "h"):
             await reply(_format_help())
             return
