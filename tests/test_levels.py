@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -93,6 +94,17 @@ class LevelTests(unittest.TestCase):
             command = request.url.path.rsplit('/', 1)[-1]
             calls.append(command)
             self.assertEqual('secret', request.headers['x-api-key'])
+            self.assertNotIn('secret', str(request.url))
+            self.assertNotIn(b'secret', request.content)
+            write = command in {'servergroupaddclient', 'servergroupdelclient'}
+            self.assertEqual('POST' if write else 'GET', request.method)
+            if write:
+                self.assertEqual('', request.url.query.decode())
+                self.assertEqual('application/json', request.headers['content-type'])
+                payload = json.loads(request.content)
+                self.assertIsInstance(payload, list)
+                self.assertEqual(1, len(payload))
+                self.assertIn(payload[0]['sgid'], {20, 21})
             body = []
             code = 0
             if command == 'servergrouplist':
@@ -114,9 +126,9 @@ class LevelTests(unittest.TestCase):
                 if fail_add[0]:
                     code = 2568
                 else:
-                    groups.add(int(request.url.params['sgid']))
+                    groups.add(int(json.loads(request.content)[0]['sgid']))
             elif command == 'servergroupdelclient':
-                groups.remove(int(request.url.params['sgid']))
+                groups.remove(int(json.loads(request.content)[0]['sgid']))
             return httpx.Response(200, json={'status': {'code': code}, 'body': body})
 
         async def run():
@@ -202,6 +214,72 @@ class LevelTests(unittest.TestCase):
                 'backend.levels.time.time', return_value=1060):
             asyncio.run(self.service.tick(None))
         self.assertEqual('clientlist', command.await_args_list[-1].args[1])
+
+    def test_write_boundary_rejects_non_level_groups_without_request(self):
+        client = SimpleNamespace(get=AsyncMock(), post=AsyncMock())
+        for command in ('servergroupaddclient', 'servergroupdelclient'):
+            for group in (6, 7, 999):
+                with self.subTest(command=command, group=group):
+                    with self.assertRaises(ValueError):
+                        asyncio.run(self.service.command(client, command, sgid=group, cldbid=42))
+        with self.assertRaises(ValueError):
+            asyncio.run(self.service.command(client, 'serverstop'))
+        client.get.assert_not_awaited()
+        client.post.assert_not_awaited()
+
+    def test_membership_posts_use_one_parameter_set_and_check_server_status(self):
+        for command in ('servergroupaddclient', 'servergroupdelclient'):
+            for code in (0, 2568):
+                with self.subTest(command=command, code=code):
+                    requests = []
+                    def handler(request):
+                        requests.append(request)
+                        self.assertEqual('POST', request.method)
+                        self.assertEqual('/1/' + command, request.url.path)
+                        self.assertEqual(b'', request.url.query)
+                        self.assertEqual('application/json', request.headers['content-type'])
+                        self.assertEqual([{'sgid': 21, 'cldbid': 42}], json.loads(request.content))
+                        self.assertEqual('secret', request.headers['x-api-key'])
+                        self.assertNotIn(b'secret', request.content)
+                        return httpx.Response(200, json={'status': {'code': code}, 'body': []})
+                    async def run():
+                        async with httpx.AsyncClient(base_url='http://localhost',
+                                headers={'x-api-key': 'secret'},
+                                transport=httpx.MockTransport(handler)) as client:
+                            if code:
+                                with self.assertRaises(RuntimeError):
+                                    await self.service.command(client, command, sgid=21, cldbid=42)
+                            else:
+                                self.assertEqual([], await self.service.command(
+                                    client, command, sgid=21, cldbid=42))
+                    asyncio.run(run())
+                    self.assertEqual(1, len(requests))
+
+    def test_run_does_not_forward_key_on_redirect_or_log_response_secrets(self):
+        real_client = httpx.AsyncClient
+        for status in (302, 500):
+            with self.subTest(status=status):
+                requests = []
+                def handler(request):
+                    requests.append(request)
+                    self.assertEqual('secret', request.headers['x-api-key'])
+                    self.assertNotIn('secret', str(request.url))
+                    return httpx.Response(status, headers={'location': 'http://other-host/secret'},
+                                          text='response containing secret')
+                def factory(**kwargs):
+                    self.assertFalse(kwargs['trust_env'])
+                    self.assertFalse(kwargs['follow_redirects'])
+                    return real_client(**kwargs, transport=httpx.MockTransport(handler))
+                with patch('backend.levels.httpx.AsyncClient', side_effect=factory), patch(
+                        'backend.levels.asyncio.sleep', side_effect=asyncio.CancelledError), patch(
+                        'backend.logger.logger.warning') as warning, patch(
+                        'backend.levels.time.time', return_value=1060):
+                    with self.assertRaises(asyncio.CancelledError):
+                        asyncio.run(self.service.run())
+                self.assertEqual(1, len(requests))
+                self.assertEqual('127.0.0.1', requests[0].url.host)
+                warning.assert_called_once_with('Level polling failed: %s', 'HTTPStatusError')
+                self.assertNotIn('secret', str(warning.call_args))
 
 
 if __name__ == '__main__':

@@ -62,8 +62,18 @@ class LevelService:
             db.close()
 
     async def command(self, client, command, **params):
-        response = await client.get(
-            f"/{self.settings.levels_server_id}/{command}", params=params)
+        path = f"/{self.settings.levels_server_id}/{command}"
+        if command in {"servergroupaddclient", "servergroupdelclient"}:
+            # Keep the write boundary restricted even if a caller bypasses tick().
+            if int(params.get("sgid", 0)) not in self.managed or int(params["sgid"]) in self.protected:
+                raise ValueError("Cannot modify membership of a non-level group")
+            # WebQuery's documented POST format is an array of parameter sets,
+            # including when this operation targets only one membership.
+            response = await client.post(path, json=[params])
+        elif command in {"clientlist", "servergrouplist", "servergrouppermlist", "servergroupsbyclientid"}:
+            response = await client.get(path, params=params)
+        else:
+            raise ValueError("Unsupported level WebQuery command")
         response.raise_for_status()
         payload = response.json()
         if int(payload["status"]["code"]) != 0:
