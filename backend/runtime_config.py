@@ -42,6 +42,7 @@ DEFINITIONS: tuple[SettingDefinition, ...] = (
     SettingDefinition("web.app_name", "web", "界面名称", env="TSBOT_WEB_APP_NAME", default="Yumi TSBot", backend_attr="web_app_name"),
     SettingDefinition("web.log_level", "web", "Web 日志等级", type="select", env="VITE_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARN", "ERROR"), backend_attr="web_log_level"),
     SettingDefinition("backend.netease_api_base", "music", "网易云 API 地址", type="url", env="TSBOT_NETEASE_API_BASE", default="http://127.0.0.1:3000/", backend_attr="netease_api_base"),
+    SettingDefinition("backend.netease_chat_quality", "music", "聊天点歌默认音质", type="select", env="TSBOT_NETEASE_CHAT_QUALITY", default="AUTO", options=("AUTO", "STANDARD", "HIGHER", "EXHIGH", "LOSSLESS", "HIRES", "JYEFFECT", "SKY", "DOLBY", "JYMASTER"), backend_attr="netease_chat_quality", help="用于 TeamSpeak 聊天点歌和歌单新入队。STANDARD 为标准音质；Web 使用各浏览器偏好；不修改已有队列的音质。"),
     SettingDefinition("backend.voice_grpc_addr", "backend", "Voice gRPC 地址", env="TSBOT_VOICE_GRPC_ADDR", default="127.0.0.1:50051", backend_attr="voice_grpc_addr"),
     SettingDefinition("backend.log_level", "backend", "后端日志等级", type="select", env="TSBOT_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARNING", "ERROR"), backend_attr="log_level"),
     SettingDefinition("backend.log_file", "backend", "后端日志文件", env="TSBOT_LOG_FILE", default="logs/backend.log", backend_attr="log_file"),

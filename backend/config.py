@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     
     cookie_key: str = "dev-cookie-key"
     netease_api_base: str = "http://47.113.188.213:3000/"
+    netease_chat_quality: str = "AUTO"
     
     # 日志配置
     log_level: str = "INFO"
