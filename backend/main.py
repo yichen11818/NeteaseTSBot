@@ -3765,7 +3765,7 @@ async def _handle_chat_command(
                         album=str(normalized.get("album") or ""),
                         duration_ms=normalized.get("duration_ms"),
                         artwork_url=str(normalized.get("artwork_url") or ""),
-                        quality_level="auto",
+                        quality_level=_normalize_netease_quality_level(settings.netease_chat_quality, strict=True),
                     )
                     added += 1
                 except Exception:
@@ -4000,7 +4000,7 @@ async def _handle_chat_command(
                 artist=artist,
                 play_now=(cmd == "play"),
                 requested_by=invoker_name,
-                quality_level="auto",
+                quality_level=_normalize_netease_quality_level(settings.netease_chat_quality, strict=True),
             )
             song_label = f"{title} - {artist}".strip(" -")
             extra = ""

@@ -135,6 +135,8 @@ Music source dependency notes:
 
 ## Netease Support (Optional, via `NeteaseCloudMusicApi`)
 
+TeamSpeak chat requests and playlist imports use the server's **Chat request default quality** setting in the music configuration group. It defaults to `AUTO`; choose `STANDARD` to request standard quality, or set `TSBOT_NETEASE_CHAT_QUALITY` before first startup. The Web player's quality preference is stored separately in each browser and only applies to new items added from that browser. Changing either default does not change the quality stored in existing queue items.
+
 This project does **not** directly call Netease official APIs. Instead, it forwards through your own `NeteaseCloudMusicApi` deployment.
 
 - **NPM**: https://www.npmjs.com/package/NeteaseCloudMusicApi
