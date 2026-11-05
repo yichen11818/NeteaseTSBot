@@ -135,7 +135,7 @@ Music source dependency notes:
 
 ## Netease Support (Optional, via `NeteaseCloudMusicApi`)
 
-When automatic track advancement encounters a transient music-source error, queued tracks are retained and recovery is retried after 15, 30, and 60 seconds, at most three times. Recovery runs without blocking chat commands; stop, clear, pause, or a new playback request cancels it. Persistent failures leave the queue available for a later manual retry.
+When automatic track advancement encounters a transient music-source error, queued tracks are retained and recovery is retried after 15, 30, and 60 seconds. If the source remains unavailable, recovery enters a cooldown and retries every five minutes until success or cancellation. Recovery runs without blocking chat commands; stop, clear, pause, or a new playback request cancels it. Transient rejection does not delete the waiting track.
 
 This project does **not** directly call Netease official APIs. Instead, it forwards through your own `NeteaseCloudMusicApi` deployment.
 

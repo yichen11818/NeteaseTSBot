@@ -179,6 +179,7 @@ async def api_token_middleware(request: Request, call_next):
 _chat_task: asyncio.Task[None] | None = None
 _auto_play_retry_task: asyncio.Task[None] | None = None
 _AUTO_PLAY_RETRY_DELAYS = (15.0, 30.0, 60.0)
+_AUTO_PLAY_COOLDOWN_DELAY = 300.0
 _current_queue_item_id: int | None = None
 _pending_queue_item_id: int | None = None
 _pending_play_request_generation: int | None = None
@@ -4129,8 +4130,14 @@ async def _continue_auto_play(item_id: int, *, repeat_finished: bool) -> None:
         global _auto_play_retry_task
         nonlocal generation
         try:
-            for attempt, delay in enumerate(_AUTO_PLAY_RETRY_DELAYS, start=1):
-                logger.warning("自动续播暂时失败，保留队列，%.0f 秒后重试 (%d/%d)", delay, attempt, len(_AUTO_PLAY_RETRY_DELAYS))
+            attempt = 0
+            while True:
+                if attempt < len(_AUTO_PLAY_RETRY_DELAYS):
+                    delay = _AUTO_PLAY_RETRY_DELAYS[attempt]
+                    logger.warning("自动续播暂时失败，保留队列，%.0f 秒后重试 (%d/%d)", delay, attempt + 1, len(_AUTO_PLAY_RETRY_DELAYS))
+                else:
+                    delay = _AUTO_PLAY_COOLDOWN_DELAY
+                    logger.warning("自动续播短重试已用尽，保留队列进入冷却，%.0f 秒后再试", delay)
                 await asyncio.sleep(delay)
                 async with _playback_lock:
                     if generation != _play_request_generation or _current_queue_item_id is not None or _pending_play_request_generation is not None:
@@ -4143,7 +4150,7 @@ async def _continue_auto_play(item_id: int, *, repeat_finished: bool) -> None:
                         logger.warning("自动续播恢复遇到不可重试错误 (%s)，队列已保留", type(exc).__name__)
                         return
                     generation = _play_request_generation
-            logger.warning("自动续播重试次数已用尽，队列已保留，可稍后手动播放")
+                attempt += 1
         finally:
             if _auto_play_retry_task is asyncio.current_task():
                 _auto_play_retry_task = None

@@ -32,6 +32,7 @@ class AutoPlayRetryTests(unittest.IsolatedAsyncioTestCase):
         patches.enter_context(patch.object(main, '_get_admin_cookie', return_value='test-cookie'))
         patches.enter_context(patch.object(main, '_auto_play_retry_task', None, create=True))
         patches.enter_context(patch.object(main, '_AUTO_PLAY_RETRY_DELAYS', (0, 0, 0), create=True))
+        patches.enter_context(patch.object(main, '_AUTO_PLAY_COOLDOWN_DELAY', 0, create=True))
         patches.enter_context(patch.multiple(main,
             _repeat_mode='none', _shuffle_enabled=False, _shuffle_queue=[], _current_shuffle_index=-1,
             _current_queue_item_id=None, _pending_queue_item_id=None, _current_source_url='',
@@ -106,13 +107,63 @@ class AutoPlayRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(20, main._current_queue_item_id)
         self.assertEqual([10, 20, 30], self.queued())
 
-    async def test_retry_budget_exhausts_without_deleting_waiting_track(self):
-        await self.finish_with_failure(failures=100)
+    async def test_cooldown_recovers_same_track_after_short_retries_exhaust(self):
+        await self.finish_with_failure(failures=6)
         await self.wait_retry()
+        self.assertEqual(20, main._current_queue_item_id)
+        self.assertEqual([20, 30], self.queued())
+        self.assertEqual(7, self.calls['20'])
+        self.assertEqual(2, self.play.await_count)
+
+    async def reach_cooldown(self):
+        entered = asyncio.Event()
+        original_sleep = asyncio.sleep
+        main._AUTO_PLAY_COOLDOWN_DELAY = 300
+
+        async def sleep(delay):
+            if delay == 300:
+                entered.set()
+                await asyncio.Event().wait()
+            await original_sleep(delay)
+
+        with patch.object(main.asyncio, 'sleep', side_effect=sleep):
+            await self.finish_with_failure(failures=100)
+            await asyncio.wait_for(entered.wait(), timeout=1)
+        return main._auto_play_retry_task
+
+    async def test_stop_cancels_long_cooldown_and_preserves_waiting_track(self):
+        task = await self.reach_cooldown()
+        self.assertEqual(4, self.calls['20'])
         self.assertIsNone(main._current_queue_item_id)
+        await main._handle_chat_command('user', 'stop')
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertTrue(task.cancelled())
         self.assertEqual([20, 30], self.queued())
         self.assertEqual(4, self.calls['20'])
-        self.assertEqual(1, self.play.await_count)
+
+    async def test_new_play_during_long_cooldown_supersedes_recovery(self):
+        task = await self.reach_cooldown()
+        await main._play_queue_item_internal(30, requested_by='manual')
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertTrue(task.cancelled())
+        self.assertEqual(30, main._current_queue_item_id)
+        self.assertEqual(4, self.calls['20'])
+
+    async def test_nontransient_error_during_cooldown_stops_recovery(self):
+        original_resolver = self.resolver.side_effect
+
+        async def resolve(**kwargs):
+            if kwargs['song_id'] == '20' and self.calls['20'] >= 4:
+                self.calls['20'] += 1
+                raise HTTPException(status_code=400, detail='invalid source request')
+            return await original_resolver(**kwargs)
+
+        self.resolver.side_effect = resolve
+        await self.finish_with_failure(failures=100)
+        await self.wait_retry()
+        self.assertEqual(5, self.calls['20'])
+        self.assertIsNone(main._current_queue_item_id)
+        self.assertEqual([20, 30], self.queued())
 
     async def test_stop_cancels_recovery(self):
         main._AUTO_PLAY_RETRY_DELAYS = (60,)
