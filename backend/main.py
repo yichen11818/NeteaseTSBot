@@ -177,6 +177,9 @@ async def api_token_middleware(request: Request, call_next):
     return await call_next(request)
 
 _chat_task: asyncio.Task[None] | None = None
+_auto_play_retry_task: asyncio.Task[None] | None = None
+_AUTO_PLAY_RETRY_DELAYS = (15.0, 30.0, 60.0)
+_AUTO_PLAY_COOLDOWN_DELAY = 300.0
 _current_queue_item_id: int | None = None
 _pending_queue_item_id: int | None = None
 _pending_play_request_generation: int | None = None
@@ -366,6 +369,9 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     global _chat_task
+    retry = _cancel_auto_play_retry()
+    if retry is not None:
+        await asyncio.gather(retry, return_exceptions=True)
     if _chat_task is not None:
         _chat_task.cancel()
         _chat_task = None
@@ -539,8 +545,19 @@ async def _take_now_playing_if_match(*, source_url: str) -> int | None:
         return item_id
 
 
+def _cancel_auto_play_retry() -> asyncio.Task[None] | None:
+    global _auto_play_retry_task
+    task = _auto_play_retry_task
+    if task is not None and task is not asyncio.current_task():
+        _auto_play_retry_task = None
+        task.cancel()
+        return task
+    return None
+
+
 async def _begin_play_request(item_id: int | None = None) -> int:
     global _play_request_generation, _pending_queue_item_id, _pending_play_request_generation
+    _cancel_auto_play_retry()
     async with _playback_lock:
         _play_request_generation += 1
         _pending_queue_item_id = item_id
@@ -550,6 +567,7 @@ async def _begin_play_request(item_id: int | None = None) -> int:
 
 async def _invalidate_play_requests() -> int:
     global _play_request_generation, _pending_queue_item_id, _pending_play_request_generation
+    _cancel_auto_play_retry()
     async with _playback_lock:
         _play_request_generation += 1
         _pending_queue_item_id = None
@@ -917,11 +935,11 @@ async def _auto_play_next_from_queue(
         try:
             if await _play_queue_item_internal(item_id, requested_by=requested_by):
                 return
-        except HTTPException as exc:
-            if exc.status_code not in (402, 403, 404, 410):
-                raise
+        except (HTTPException, httpx.HTTPError) as exc:
             if _play_request_generation != generation_before_play + 1:
                 return
+            if not isinstance(exc, HTTPException) or exc.status_code not in (402, 403, 404, 410):
+                raise
             await _delete_queue_item(item_id)
             try:
                 await voice.send_notice(f"歌曲不可播放，已跳过并删除: #{item_id}", target_mode=2)
@@ -2468,6 +2486,7 @@ async def voice_play() -> dict:
 
 @app.post("/voice/pause")
 async def voice_pause() -> dict:
+    await _invalidate_play_requests()
     await voice.pause()
     await _mark_playback_paused()
     return {"ok": True}
@@ -4058,24 +4077,85 @@ async def _handle_playback_finished(source_url: str) -> None:
         if _repeat_mode == "none":
             await _delete_queue_item(item_id)
         return
-    if _repeat_mode == "one":
+    await _continue_auto_play(item_id, repeat_finished=True)
+
+
+async def _auto_play_continuation_attempt(item_id: int, *, repeat_finished: bool) -> None:
+    if repeat_finished and _repeat_mode == "one":
         generation_before_play = _play_request_generation
         try:
             if await _play_queue_item_internal(item_id, requested_by="auto"):
                 return
-        except HTTPException as exc:
-            if exc.status_code not in (402, 403, 404, 410):
-                raise
+        except (HTTPException, httpx.HTTPError) as exc:
             if _play_request_generation != generation_before_play + 1:
                 return
+            if not isinstance(exc, HTTPException) or exc.status_code not in (402, 403, 404, 410):
+                raise
             await _delete_queue_item(item_id)
-        await _auto_play_next_from_queue(start_after_id=item_id)
-        return
-    if _repeat_mode == "all":
-        await _auto_play_next_from_queue(start_after_id=item_id)
-        return
-    await _delete_queue_item(item_id)
+    elif repeat_finished and _repeat_mode == "none":
+        await _delete_queue_item(item_id)
     await _auto_play_next_from_queue(start_after_id=item_id)
+
+
+def _is_transient_playback_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.RequestError):
+        return True
+    if isinstance(exc, HTTPException):
+        return exc.status_code in (429, 502, 503, 504)
+    if isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code in (429, 502, 503, 504):
+            return True
+        if exc.response.status_code == 400:
+            try:
+                data = exc.response.json()
+            except ValueError:
+                return False
+            return isinstance(data, dict) and str(data.get("code")) == "-460"
+    return False
+
+
+async def _continue_auto_play(item_id: int, *, repeat_finished: bool) -> None:
+    global _auto_play_retry_task
+    try:
+        await _auto_play_continuation_attempt(item_id, repeat_finished=repeat_finished)
+        return
+    except (HTTPException, httpx.HTTPError) as exc:
+        if not _is_transient_playback_error(exc):
+            raise
+
+    generation = _play_request_generation
+    _cancel_auto_play_retry()
+
+    async def retry() -> None:
+        global _auto_play_retry_task
+        nonlocal generation
+        try:
+            attempt = 0
+            while True:
+                if attempt < len(_AUTO_PLAY_RETRY_DELAYS):
+                    delay = _AUTO_PLAY_RETRY_DELAYS[attempt]
+                    logger.warning("自动续播暂时失败，保留队列，%.0f 秒后重试 (%d/%d)", delay, attempt + 1, len(_AUTO_PLAY_RETRY_DELAYS))
+                else:
+                    delay = _AUTO_PLAY_COOLDOWN_DELAY
+                    logger.warning("自动续播短重试已用尽，保留队列进入冷却，%.0f 秒后再试", delay)
+                await asyncio.sleep(delay)
+                async with _playback_lock:
+                    if generation != _play_request_generation or _current_queue_item_id is not None or _pending_play_request_generation is not None:
+                        return
+                try:
+                    await _auto_play_continuation_attempt(item_id, repeat_finished=repeat_finished)
+                    return
+                except (HTTPException, httpx.HTTPError) as exc:
+                    if not _is_transient_playback_error(exc):
+                        logger.warning("自动续播恢复遇到不可重试错误 (%s)，队列已保留", type(exc).__name__)
+                        return
+                    generation = _play_request_generation
+                attempt += 1
+        finally:
+            if _auto_play_retry_task is asyncio.current_task():
+                _auto_play_retry_task = None
+
+    _auto_play_retry_task = asyncio.create_task(retry())
 
 
 async def _handle_playback_error(source_url: str) -> None:
@@ -4092,7 +4172,7 @@ async def _handle_playback_error(source_url: str) -> None:
         has_pending_request = _pending_play_request_generation is not None
         has_current_track = _current_queue_item_id is not None
     if not has_pending_request and not has_current_track and await _is_play_request_current(request_generation):
-        await _auto_play_next_from_queue(start_after_id=item_id)
+        await _continue_auto_play(item_id, repeat_finished=False)
 
 
 async def _chat_command_worker() -> None:
