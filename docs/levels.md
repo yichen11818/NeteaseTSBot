@@ -1,20 +1,23 @@
 # TS6 用户等级（后端）
 
 默认关闭，无前端接口，不依赖 Rust 音频服务。使用现有 httpx 依赖。
-在后端环境配置以下变量并重启；门槛为累计小时数，值为预先创建的普通服务器组 ID：
+将以下变量加入项目根目录的 `tsbot.env` 并重启后端；门槛为累计小时数，值为预先创建的普通服务器组 ID：
 
 ```dotenv
-TSBOT_LEVELS_ENABLED=true
-TSBOT_LEVELS_DB=./data/levels.db
-TSBOT_LEVELS_WEBQUERY_URL=http://127.0.0.1:10080
-TSBOT_LEVELS_API_KEY=replace-with-dedicated-query-api-key
-TSBOT_LEVELS_SERVER_ID=1
-TSBOT_LEVELS_POLL_SECONDS=60
-TSBOT_LEVELS_THRESHOLDS={"1":20,"10":21,"30":22,"100":23,"300":24}
-TSBOT_LEVELS_PROTECTED_GROUPS=6,7
-TSBOT_LEVELS_EXCLUDED_UIDS=music-bot-unique-id,other-bot-unique-id
-TSBOT_LEVELS_AFK_CHANNELS=9,10
+export TSBOT_LEVELS_ENABLED=true
+export TSBOT_LEVELS_DB=./data/levels.db
+export TSBOT_LEVELS_WEBQUERY_URL=http://127.0.0.1:10080
+export TSBOT_LEVELS_API_KEY=replace-with-dedicated-query-api-key
+export TSBOT_LEVELS_SERVER_ID=1
+export TSBOT_LEVELS_POLL_SECONDS=60
+export TSBOT_LEVELS_THRESHOLDS='{"1":20,"10":21,"30":22,"100":23,"300":24}'
+export TSBOT_LEVELS_PROTECTED_GROUPS=6,7
+export TSBOT_LEVELS_EXCLUDED_UIDS=music-bot-unique-id,other-bot-unique-id
+export TSBOT_LEVELS_AFK_CHANNELS=9,10
 ```
+
+Linux 启动脚本通过 `source tsbot.env` 加载配置，必须保留 `export`，并用外层单引号保护阈值 JSON 中的双引号。
+上述写法也适用于现有 Docker Compose `env_file` 和 Windows `Import-TsbotEnv.ps1` 加载器。
 
 组 ID 均为示例。必须将所有管理员、默认、访客等不能撤销的组加入保护列表，
 只能把专用等级组填入 thresholds。配置冲突时等级任务不启动，音乐服务继续运行。
@@ -54,6 +57,7 @@ IP allow list 是防洪豁免列表，不能当作访问控制。
 达到门槛先添加目标组，再只移除 thresholds 中其他组；添加失败保留旧组。
 每轮读取真实组状态，能恢复添加成功后进程崩溃、删除失败等部分成功情况。
 synced=0 表示尚待同步；排除用户不执行组变更。离线用户下次上线再同步。
+单个用户的成员组查询、添加或移除失败时，保留待同步状态并继续处理其他用户，下一轮重新读取真实组状态再重试。
 改变门槛会根据原累计秒重新计算等级。移出 thresholds 的组不再受管理，需人工处理历史组。
 仅从服务端环境修改配置并重启；不提供公开的累计时间修改或组操作 API。
 

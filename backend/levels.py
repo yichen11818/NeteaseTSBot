@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from .logger import logger
+
 
 def ids(value):
     return {int(part.strip()) for part in value.split(",") if part.strip()}
@@ -161,18 +163,23 @@ class LevelService:
             # Refresh actual membership on every retry; DB flags never stand in for TS state.
             if not self.claim(time.time()):
                 return
-            groups = await self.command(client, "servergroupsbyclientid", cldbid=database_id)
-            present = {int(g["sgid"]) for g in groups}
-            desired = self.thresholds[level - 1][1] if level else None
-            if desired is not None and desired not in present:
-                await self.command(client, "servergroupaddclient", sgid=desired, cldbid=database_id)
-            for group in sorted((present & self.managed) - {desired}):
-                await self.command(client, "servergroupdelclient", sgid=group, cldbid=database_id)
+            try:
+                groups = await self.command(client, "servergroupsbyclientid", cldbid=database_id)
+                present = {int(g["sgid"]) for g in groups}
+                desired = self.thresholds[level - 1][1] if level else None
+                if desired is not None and desired not in present:
+                    await self.command(client, "servergroupaddclient", sgid=desired, cldbid=database_id)
+                for group in sorted((present & self.managed) - {desired}):
+                    await self.command(client, "servergroupdelclient", sgid=group, cldbid=database_id)
+            except Exception as exc:
+                # account() left this user unsynced. Retry next poll without
+                # preventing unrelated users from receiving their level group.
+                logger.warning("Level membership sync failed: %s", type(exc).__name__)
+                continue
             with self.db() as db:
                 db.execute("UPDATE level_users SET synced=1 WHERE uid=?", (uid,))
 
     async def run(self):
-        from .logger import logger
         # No redirects or environment proxies: never forward the API key elsewhere.
         async with httpx.AsyncClient(base_url=self.settings.levels_webquery_url.rstrip("/"),
                                      headers={"x-api-key": self.settings.levels_api_key},

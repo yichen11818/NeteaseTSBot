@@ -389,6 +389,8 @@ async def _shutdown() -> None:
         _chat_task.cancel()
         _chat_task = None
     pending = list(_bilibili_chat_tasks)
+    if pending:
+        await _invalidate_play_requests()
     for task in pending:
         task.cancel()
     if pending:
@@ -3454,9 +3456,10 @@ async def _enqueue_bilibili_song(
     album: str = "",
     duration_ms: int | None = None,
     artwork_url: str = "",
+    request_generation: int | None = None,
 ) -> tuple[int, bool]:
     session = new_session()
-    play_request_generation: int | None = None
+    play_request_generation = request_generation if play_now else None
     try:
         normalized_video_id = _extract_bilibili_video_id(video_id)
         if not normalized_video_id:
@@ -3479,7 +3482,10 @@ async def _enqueue_bilibili_song(
             _schedule_ts_description_update()
             return int(item.id), False
 
-        play_request_generation = await _begin_play_request()
+        if play_request_generation is None:
+            play_request_generation = await _begin_play_request()
+        if not await _is_play_request_current(play_request_generation):
+            raise HTTPException(status_code=409, detail="bilibili playback request was superseded by a newer command")
         duration_ms, artist, album, artwork_url = await _hydrate_bilibili_track_metadata(
             video_id=normalized_video_id,
             title=title,
@@ -3553,18 +3559,22 @@ def _parse_bilibili_chat_video_id(arg: str) -> str:
 
 
 async def _run_bilibili_chat_request(video_id: str, *, play_now: bool,
-                                      invoker_name: str, target_mode: int) -> None:
+                                      invoker_name: str, target_mode: int,
+                                      request_generation: int | None) -> None:
     async def reply(text: str) -> None:
         await voice.send_notice(text[:700], target_mode=target_mode)
 
     try:
         metadata = await _extract_bilibili_video_info(video_id)
+        if request_generation is not None and not await _is_play_request_current(request_generation):
+            raise HTTPException(status_code=409, detail="bilibili chat request was superseded")
         item_id, _ = await _enqueue_bilibili_song(
             video_id=video_id, title=str(metadata.get("title") or video_id),
             artist=str(metadata.get("artist") or ""), album=str(metadata.get("album") or ""),
             duration_ms=_coerce_positive_int(metadata.get("duration_ms")),
             artwork_url=str(metadata.get("artwork_url") or ""),
             play_now=play_now, requested_by=invoker_name,
+            request_generation=request_generation,
         )
     except HTTPException as exc:
         if exc.status_code == 409:
@@ -3581,6 +3591,9 @@ async def _run_bilibili_chat_request(video_id: str, *, play_now: bool,
         logger.warning("Bilibili chat request failed: %s", type(exc).__name__)
         await reply("B站音频解析或播放失败，请稍后重试或换一个视频。")
         return
+    finally:
+        if request_generation is not None:
+            await _clear_pending_play_request(request_generation=request_generation)
     action = "已开始播放" if play_now else "已加入队列"
     await reply(f"B站{action}: #{item_id} {metadata.get('title') or video_id}")
 
@@ -3729,9 +3742,14 @@ async def _handle_chat_command(
             if len(_bilibili_chat_tasks) >= _BILIBILI_CHAT_MAX_PENDING:
                 await reply("B站点播任务较多，请稍后再试。")
                 return
+            play_now = cmd == "bilibili_play"
+            # Reserve ordering before the background metadata lookup can yield
+            # to a newer chat/Web play or stop command.
+            request_generation = await _begin_play_request() if play_now else None
             task = asyncio.create_task(_run_bilibili_chat_request(
-                video_id, play_now=(cmd == "bilibili_play"),
+                video_id, play_now=play_now,
                 invoker_name=invoker_name, target_mode=int(target_mode),
+                request_generation=request_generation,
             ))
             _bilibili_chat_tasks.add(task)
             task.add_done_callback(_finish_bilibili_chat_task)

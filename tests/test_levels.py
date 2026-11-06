@@ -137,8 +137,8 @@ class LevelTests(unittest.TestCase):
                 self.service.account([self.client()], 1000)
                 self.service.account([self.client()], 1120)
                 with patch('backend.levels.time.time', return_value=1120):
-                    with self.assertRaises(RuntimeError):
-                        await self.service.tick(client)
+                    await self.service.tick(client)
+                    self.assertEqual(0, self.row()['synced'])
                     self.assertNotIn('servergroupdelclient', calls)
                     fail_add[0] = False
                     await self.service.tick(client)
@@ -159,6 +159,57 @@ class LevelTests(unittest.TestCase):
         asyncio.run(run())
         self.service.account([self.client()], 1120)
         self.assertEqual(0, self.row()['seconds'])
+
+    def test_failed_user_does_not_block_other_users_and_retries_later(self):
+        for failure in ('servergroupsbyclientid', 'servergroupaddclient', 'servergroupdelclient'):
+            with self.subTest(failure=failure):
+                with self.service.db() as db:
+                    db.execute('DELETE FROM level_users')
+                clients = [self.client('first'), self.client('second', clid='3', client_database_id='43')]
+                self.service.account(clients, 1000)
+                memberships = {42: {6, 20}, 43: {7}}
+                failing = True
+                calls = []
+
+                async def command(client, name, **params):
+                    calls.append((name, params))
+                    if name == 'servergrouplist':
+                        return [{'sgid': str(g), 'type': '1'} for g in (20, 21)]
+                    if name == 'servergrouppermlist':
+                        return [{'permsid': 'i_icon_id', 'permvalue': '1'}]
+                    if name == 'clientlist':
+                        return clients
+                    if failing and params.get('cldbid') == 42 and name == failure:
+                        raise RuntimeError('private upstream error')
+                    if name == 'servergroupsbyclientid':
+                        return [{'sgid': str(g)} for g in memberships[params['cldbid']]]
+                    if name == 'servergroupaddclient':
+                        memberships[params['cldbid']].add(params['sgid'])
+                    if name == 'servergroupdelclient':
+                        memberships[params['cldbid']].remove(params['sgid'])
+                    return []
+
+                async def run():
+                    nonlocal failing
+                    with patch.object(self.service, 'command', side_effect=command), patch(
+                            'backend.logger.logger.warning') as warning:
+                        for now in (1120, 1180):
+                            with patch('backend.levels.time.time', return_value=now):
+                                await self.service.tick(None)
+                            self.assertEqual({7, 21}, memberships[43])
+                            self.assertEqual(1, self.row('second')['synced'])
+                            self.assertEqual(0, self.row('first')['synced'])
+                            self.assertIn(20, memberships[42])
+                        if failure == 'servergroupaddclient':
+                            self.assertFalse(any(name == 'servergroupdelclient' for name, _ in calls))
+                        self.assertEqual(2, warning.call_count)
+                        self.assertNotIn('private upstream error', str(warning.call_args_list))
+                        failing = False
+                        with patch('backend.levels.time.time', return_value=1240):
+                            await self.service.tick(None)
+                        self.assertEqual({6, 21}, memberships[42])
+                        self.assertEqual(1, self.row('first')['synced'])
+                asyncio.run(run())
 
     def test_admin_group_detected_even_without_protected_list(self):
         calls = []

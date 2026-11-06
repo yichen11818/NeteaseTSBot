@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from fastapi import HTTPException
 
@@ -14,6 +14,13 @@ META = dict(title='视频标题', artist='UP主', album='音乐', duration_ms=12
 
 
 class BilibiliChatTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        state = patch.multiple(main, _playback_lock=asyncio.Lock(), _play_request_generation=0,
+                               _pending_play_request_generation=None, _pending_queue_item_id=None,
+                               _bilibili_chat_tasks=set())
+        state.start()
+        self.addCleanup(state.stop)
+
     async def asyncTearDown(self):
         tasks = list(main._bilibili_chat_tasks)
         for task in tasks:
@@ -39,7 +46,8 @@ class BilibiliChatTests(unittest.IsolatedAsyncioTestCase):
                 enqueue.assert_awaited_once_with(
                     video_id=BV, title=META['title'], artist=META['artist'], album=META['album'],
                     duration_ms=META['duration_ms'], artwork_url=META['artwork_url'],
-                    play_now=play_now, requested_by='Alice')
+                    play_now=play_now, requested_by='Alice',
+                    request_generation=ANY if play_now else None)
                 self.assertIn('已开始播放' if play_now else '已加入队列', notice.call_args.args[0])
                 self.assertEqual(1, notice.call_args.kwargs['target_mode'])
                 search.assert_not_awaited()
@@ -77,6 +85,7 @@ class BilibiliChatTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('B站', notice.call_args.args[0])
                 self.assertNotIn('private-cookie', notice.call_args.args[0])
                 enqueue.assert_not_awaited()
+                self.assertIsNone(main._pending_play_request_generation)
 
     async def test_enqueue_failure_never_reports_success(self):
         for code, expected in ((400, '时长限制'), (409, '替代'), (502, '失败')):
@@ -124,6 +133,41 @@ class BilibiliChatTests(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def test_failed_old_metadata_does_not_clear_newer_pending_request(self):
+        old_entered = asyncio.Event()
+        new_entered = asyncio.Event()
+        release_old = asyncio.Event()
+        release_new = asyncio.Event()
+
+        async def extract(video_id):
+            if video_id == BV:
+                old_entered.set()
+                await release_old.wait()
+                raise HTTPException(502, 'internal')
+            new_entered.set()
+            await release_new.wait()
+            return META
+
+        with patch.object(main, '_extract_bilibili_video_info', side_effect=extract), patch.object(
+                main, '_enqueue_bilibili_song', AsyncMock(return_value=(42, False))), patch.object(
+                main.voice, 'send_notice', AsyncMock()):
+            await main._handle_chat_command('Alice', f'b站 {BV}')
+            old_tasks = set(main._bilibili_chat_tasks)
+            try:
+                await asyncio.wait_for(old_entered.wait(), 2)
+                await main._handle_chat_command('Bob', 'b站 BV1Q541167Qg')
+                await asyncio.wait_for(new_entered.wait(), 2)
+                newer_generation = main._pending_play_request_generation
+                self.assertIsNotNone(newer_generation)
+                release_old.set()
+                await asyncio.gather(*old_tasks)
+                self.assertEqual(newer_generation, main._pending_play_request_generation)
+            finally:
+                release_old.set()
+                release_new.set()
+                await self.drain()
+        self.assertIsNone(main._pending_play_request_generation)
+
     async def test_netease_keyword_commands_keep_existing_path(self):
         result = {'result': {'songs': [{'id': 123, 'name': '网易歌曲', 'artists': [{'name': '歌手'}]}]}}
         for command, play_now in [('点歌', False), ('播放', True)]:
@@ -147,3 +191,4 @@ class BilibiliChatTests(unittest.IsolatedAsyncioTestCase):
             await main._shutdown()
         self.assertTrue(task.cancelled())
         self.assertFalse(main._bilibili_chat_tasks)
+        self.assertIsNone(main._pending_play_request_generation)
