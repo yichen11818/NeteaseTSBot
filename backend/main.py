@@ -3191,7 +3191,7 @@ def _format_help() -> str:
         "b站 <BV号|视频链接> - 立即播放B站音频\n"
         "点播b站 <BV号|视频链接> - 加入播放队列\n"
         "队列|queue - show queue\n"
-        "歌单|playlist <keywords> - search Netease playlists\n"
+        "歌单|playlist <keywords> / id:<ID> - search Netease playlists or add directly by ID\n"
         "选择|select <number> - add a playlist from the last playlist search\n"
         "清空|clear - clear the current queue\n"
         "顺序播放|order / 随机播放|random - switch queue playback mode\n"
@@ -3845,9 +3845,16 @@ async def _handle_chat_command(
             await reply(f"已切换为{mode}")
             return
 
-        if cmd == "playlist":
+        selected_playlist: dict[str, str] | None = None
+        if cmd == "playlist" and arg[:3].lower() == "id:":
+            playlist_id = arg[3:].strip()
+            if not re.fullmatch(r"[0-9]+", playlist_id) or not playlist_id.lstrip("0"):
+                await reply("歌单 ID 必须为正整数，用法: playlist id:<ID>")
+                return
+            selected_playlist = {"id": playlist_id.lstrip("0"), "name": ""}
+        elif cmd == "playlist":
             if not arg:
-                await reply("用法: playlist <歌单关键词>")
+                await reply("用法: playlist <歌单关键词> 或 playlist id:<ID>")
                 return
             raw = await netease.search(keywords=arg, limit=5, type_=1000)
             playlists = _extract_playlist_search_items(raw)
@@ -3875,7 +3882,6 @@ async def _handle_chat_command(
                 return
             playlists = _get_ts_playlist_results(invoker_key)
             selection_token = arg.split()[0].strip()
-            selected_playlist: dict[str, str] | None = None
             try:
                 selection = int(selection_token)
             except ValueError:
@@ -3890,6 +3896,8 @@ async def _handle_chat_command(
             if selected_playlist is None:
                 await reply("歌单编号无效，请先使用 playlist 搜索")
                 return
+
+        if selected_playlist is not None:
             playlist_id = selected_playlist["id"]
 
             cookie = _get_admin_cookie_or_none()

@@ -135,6 +135,14 @@ Music source dependency notes:
 
 ## Netease Support (Optional, via `NeteaseCloudMusicApi`)
 
+### TeamSpeak playlist commands
+
+- `playlist <keywords>` searches Netease playlists and shows up to five results.
+- `select <number>` adds a result from your latest search; results are scoped to your TeamSpeak user and expire after five minutes.
+- `playlist id:<ID>` adds a Netease playlist directly, without searching first; for example, `playlist id:123456789`. The ID must be a positive integer. The Chinese alias is `歌单 id:<ID>`.
+- A bare numeric argument, such as `playlist 123456789`, remains a keyword search. Direct ID import preserves your previous search results for subsequent `select` commands.
+- Both import paths use the same queue behavior: available tracks are added, and playback starts if the player is idle. Playlist visibility and playable tracks depend on the music account and upstream permissions.
+
 This project does **not** directly call Netease official APIs. Instead, it forwards through your own `NeteaseCloudMusicApi` deployment.
 
 - **NPM**: https://www.npmjs.com/package/NeteaseCloudMusicApi
