@@ -208,7 +208,7 @@ jobs:
       - name: Install voice-service build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libopus-dev
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
