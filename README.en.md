@@ -274,6 +274,13 @@ npm --prefix web run dev
 
 Local development uses `http://127.0.0.1:5173` by default and proxies `/api` to the backend.
 
+<p align="center">
+  <b>🌟 推荐项目 / Related Project</b><br><br>
+  <a href="https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak">
+    <img src="https://gh-card.dev/repos/EchoSixHIYA/WebSpeak-client-for-TeamSpeak.svg?fullname=true" alt="WebSpeak-client-for-TeamSpeak" />
+  </a>
+</p>
+
 ## Docker Deployment
 
 The repository now includes:
@@ -446,6 +453,34 @@ See `LOGGING.md` for details (`scripts/log-viewer.sh` / `scripts/unified-logger.
 - **Is TS6 fully supported?**
   - The primary client connection supports TS6. Configure it in Web system settings; historical `TSBOT_TS3_*` environment values are imported once for migration.
   - Legacy `TSBOT_TS3_SERVERQUERY_*` settings still map to the old ServerQuery fallback, not TS6 HTTP(S) Query.
+
+## Contributors and Thanks
+
+Thank you to everyone who has contributed code, documentation, proposals, bug reports, and testing in real deployments.
+The acknowledgments below are based on commit, pull request, and issue history. Unmerged proposals are appreciated too; follow the linked PRs for their implementation status.
+
+### Code and Maintenance
+
+| Contributor | Contribution |
+| --- | --- |
+| [@yichen11818](https://github.com/yichen11818) | Project creation and maintenance, core features, deployment support, documentation, and community support. |
+| [@BreadAira](https://github.com/BreadAira) | Fixes for Netease cookie parsing, Bilibili covers, shared audio files and Chromium in Docker deployments ([PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9), [Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)). |
+| [@Marius128](https://github.com/Marius128) | Optional TeamSpeak user levels, Bilibili chat playback commands, and accompanying documentation and tests ([PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)). |
+
+### Proposals, Reports, and Verification
+
+| Contributor | Contribution |
+| --- | --- |
+| [@yume2017cn](https://github.com/yume2017cn) | Proposed shuffle, playlist selection, queue clearing, and other chat commands; investigated search display and playback state. The chat requirements were subsequently reimplemented by the maintainer ([PR #10](https://github.com/yichen11818/NeteaseTSBot/pull/10)). |
+| [@Yz017](https://github.com/Yz017) | Submitted a project organization proposal ([PR #12](https://github.com/yichen11818/NeteaseTSBot/pull/12), not merged). |
+| [@nitonitori](https://github.com/nitonitori) | Proposed and tested Netease risk-control quality fallback, direct playlist ID imports, automatic continuation retries, and configurable chat quality ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), [#26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), awaiting review). |
+| [@Ideenaster](https://github.com/Ideenaster) | Detailed reproduction, root-cause analysis, a suggested fix, and playback verification for the repeat-all queue deletion bug ([Issue #13](https://github.com/yichen11818/NeteaseTSBot/issues/13)). |
+| [@TICK077](https://github.com/TICK077) | Investigated Netease and QQ Music deployment, search, and login issues, providing logs and API results ([Issue #11](https://github.com/yichen11818/NeteaseTSBot/issues/11)). |
+| [@screamingshark](https://github.com/screamingshark) | Reported and verified Docker frontend/backend connectivity issues and shared Netease VIP playback and API findings ([Issue #4](https://github.com/yichen11818/NeteaseTSBot/issues/4), [#7](https://github.com/yichen11818/NeteaseTSBot/issues/7)). |
+| [@liufeng7375-spec](https://github.com/liufeng7375-spec) | Requested TS6 support and multi-bot management, and reported Netease QR login risk-control issues ([Issue #1](https://github.com/yichen11818/NeteaseTSBot/issues/1), [#3](https://github.com/yichen11818/NeteaseTSBot/issues/3), [#5](https://github.com/yichen11818/NeteaseTSBot/issues/5), [#6](https://github.com/yichen11818/NeteaseTSBot/issues/6)). |
+| [@ZhuMengMeng666](https://github.com/ZhuMengMeng666) | Described the need to connect multiple TeamSpeak servers from a single multi-bot deployment ([Issue #18](https://github.com/yichen11818/NeteaseTSBot/issues/18)). |
+
+Thanks also to everyone who tries, discusses, and shares the project. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved, or submit a PR to add any contribution we missed.
 
 ## License
 

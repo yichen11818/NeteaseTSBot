@@ -338,6 +338,13 @@ npm --prefix web run dev
 
 本地开发默认访问 `http://127.0.0.1:5173`，并通过 `/api` 代理到后端。
 
+<p align="center">
+  <b>🌟 推荐项目 / Related Project</b><br><br>
+  <a href="https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak">
+    <img src="https://gh-card.dev/repos/EchoSixHIYA/WebSpeak-client-for-TeamSpeak.svg?fullname=true" alt="WebSpeak-client-for-TeamSpeak" />
+  </a>
+</p>
+
 ## Docker 部署
 
 ### 1) 准备环境变量
@@ -525,9 +532,33 @@ B 站后台授权支持扫码登录或手动 Cookie，用于登录态接口和 A
   - 当前主客户端连接已支持 TS6，连接参数仍沿用 `TSBOT_TS3_*` 命名。
   - 但 legacy `TSBOT_TS3_SERVERQUERY_*` 仍是旧式 ServerQuery fallback，不是 TS6 的 HTTP(S) Query。
 
-## 相关项目
+## 贡献者与致谢
 
-- [WebSpeak-client-for-TeamSpeak](https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak)
+感谢每一位通过代码、文档、功能提案、问题报告和实际环境验证帮助项目改进的朋友。
+以下根据提交记录、PR 和 Issue 历史整理；未合并的提案也值得感谢，具体上线状态以对应 PR 为准。
+
+### 代码贡献与维护
+
+| 贡献者 | 贡献 |
+| --- | --- |
+| [@yichen11818](https://github.com/yichen11818) | 项目发起与维护、核心功能开发、部署支持、文档和社区反馈处理。 |
+| [@BreadAira](https://github.com/BreadAira) | 修复网易云 Cookie 解析、B 站封面加载和 Docker 环境音频共享、Chromium 等问题（[PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9)、[Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)）。 |
+| [@Marius128](https://github.com/Marius128) | 贡献可选的 TeamSpeak 用户等级系统、B 站聊天点播，以及相应文档和测试（[PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)）。 |
+
+### 功能提案、问题反馈与验证
+
+| 贡献者 | 贡献 |
+| --- | --- |
+| [@yume2017cn](https://github.com/yume2017cn) | 提交随机播放、歌单选择、清空队列等聊天指令方案，并参与搜索显示与播放状态排查；相关聊天需求后续由维护者重新实现（[PR #10](https://github.com/yichen11818/NeteaseTSBot/pull/10)）。 |
+| [@Yz017](https://github.com/Yz017) | 提交项目梳理提案（[PR #12](https://github.com/yichen11818/NeteaseTSBot/pull/12)，未合并）。 |
+| [@nitonitori](https://github.com/nitonitori) | 提交网易云风控音质回退、按 ID 导入歌单、自动续播重试和聊天默认音质的方案与测试（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)、[#26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)，待评审）。 |
+| [@Ideenaster](https://github.com/Ideenaster) | 提供列表循环清空队列问题的详细复现、原因分析、修复建议和实际播放验证（[Issue #13](https://github.com/yichen11818/NeteaseTSBot/issues/13)）。 |
+| [@TICK077](https://github.com/TICK077) | 协助排查网易云与 QQ 音乐的部署、搜索和登录问题，并持续补充日志与接口结果（[Issue #11](https://github.com/yichen11818/NeteaseTSBot/issues/11)）。 |
+| [@screamingshark](https://github.com/screamingshark) | 反馈并验证 Docker 前后端通信问题，补充网易云会员播放与 API 使用情况（[Issue #4](https://github.com/yichen11818/NeteaseTSBot/issues/4)、[#7](https://github.com/yichen11818/NeteaseTSBot/issues/7)）。 |
+| [@liufeng7375-spec](https://github.com/liufeng7375-spec) | 提出 TS6 支持和多机器人管理需求，并反馈网易云扫码风控问题（[Issue #1](https://github.com/yichen11818/NeteaseTSBot/issues/1)、[#3](https://github.com/yichen11818/NeteaseTSBot/issues/3)、[#5](https://github.com/yichen11818/NeteaseTSBot/issues/5)、[#6](https://github.com/yichen11818/NeteaseTSBot/issues/6)）。 |
+| [@ZhuMengMeng666](https://github.com/ZhuMengMeng666) | 补充单次部署连接多个 TeamSpeak 服务器的多机器人使用需求（[Issue #18](https://github.com/yichen11818/NeteaseTSBot/issues/18)）。 |
+
+也感谢所有试用、讨论和分享项目的朋友。欢迎通过 [贡献指南](CONTRIBUTING.md) 继续参与，或提交 PR 补充遗漏的贡献记录。
 
 ## License
 

@@ -652,6 +652,76 @@ class PlaybackControlsTests(unittest.IsolatedAsyncioTestCase):
         )))
         return patches
 
+    async def _assert_bilibili_chat_metadata_superseded(self, *, stop: bool) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def extract(video_id):
+            entered.set()
+            await release.wait()
+            return dict(title="old chat request", artist="artist", album="album",
+                        duration_ms=1000, artwork_url="artwork")
+
+        with self._source_patches(), patch.object(main, "_extract_bilibili_video_info", side_effect=extract):
+            await main._handle_chat_command("user", "b站 BV1xx411c7mD")
+            tasks = list(main._bilibili_chat_tasks)
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                if stop:
+                    await main._handle_chat_command("user", "stop")
+                else:
+                    await main._play_queue_item_internal(20, requested_by="newer")
+            finally:
+                release.set()
+                await asyncio.gather(*tasks)
+                await asyncio.sleep(0)
+
+        if stop:
+            self.play.assert_not_awaited()
+            self.assertIsNone(main._current_queue_item_id)
+        else:
+            self.play.assert_awaited_once()
+            self.assertEqual("source:20", self.play.call_args.kwargs["source_url"])
+            self.assertEqual(20, main._current_queue_item_id)
+        self.assertEqual([10, 20, 30], self._queue_ids())
+        self.assertIsNone(main._pending_play_request_generation)
+        self.assertIn("替代", main.voice.send_notice.call_args.args[0])
+
+    async def test_bilibili_chat_stop_during_metadata_prevents_late_play(self) -> None:
+        await self._assert_bilibili_chat_metadata_superseded(stop=True)
+
+    async def test_bilibili_chat_metadata_cannot_override_newer_play(self) -> None:
+        await self._assert_bilibili_chat_metadata_superseded(stop=False)
+
+    async def test_newer_bilibili_chat_request_wins_when_metadata_finishes_first(self) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        older = "BV1xx411c7mD"
+        newer = "BV1Q541167Qg"
+
+        async def extract(video_id):
+            if video_id == older:
+                entered.set()
+                await release.wait()
+            return dict(title=video_id, artist="artist", album="album",
+                        duration_ms=1000, artwork_url="artwork")
+
+        with self._source_patches(), patch.object(main, "_extract_bilibili_video_info", side_effect=extract):
+            await main._handle_chat_command("user", f"b站 {older}")
+            old_tasks = set(main._bilibili_chat_tasks)
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                await main._handle_chat_command("user", f"b站 {newer}")
+                await asyncio.gather(*(main._bilibili_chat_tasks - old_tasks))
+            finally:
+                release.set()
+                await asyncio.gather(*old_tasks)
+                await asyncio.sleep(0)
+        self.play.assert_awaited_once()
+        self.assertEqual(newer, self.play.call_args.kwargs["title"])
+        self.assertEqual(4, len(self._queue_ids()))
+        self.assertIsNone(main._pending_play_request_generation)
+
     async def _enqueue_source(self, source: str) -> tuple[int, bool]:
         common = dict(title="new", artist="artist", play_now=True, requested_by="manual")
         if source == "netease":
