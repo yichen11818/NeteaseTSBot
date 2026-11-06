@@ -274,6 +274,13 @@ npm --prefix web run dev
 
 Local development uses `http://127.0.0.1:5173` by default and proxies `/api` to the backend.
 
+<p align="center">
+  <b>🌟 推荐项目 / Related Project</b><br><br>
+  <a href="https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak">
+    <img src="https://gh-card.dev/repos/EchoSixHIYA/WebSpeak-client-for-TeamSpeak.svg?fullname=true" alt="WebSpeak-client-for-TeamSpeak" />
+  </a>
+</p>
+
 ## Docker Deployment
 
 The repository now includes:

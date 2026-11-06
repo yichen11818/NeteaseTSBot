@@ -338,6 +338,13 @@ npm --prefix web run dev
 
 本地开发默认访问 `http://127.0.0.1:5173`，并通过 `/api` 代理到后端。
 
+<p align="center">
+  <b>🌟 推荐项目 / Related Project</b><br><br>
+  <a href="https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak">
+    <img src="https://gh-card.dev/repos/EchoSixHIYA/WebSpeak-client-for-TeamSpeak.svg?fullname=true" alt="WebSpeak-client-for-TeamSpeak" />
+  </a>
+</p>
+
 ## Docker 部署
 
 ### 1) 准备环境变量
@@ -552,10 +559,6 @@ B 站后台授权支持扫码登录或手动 Cookie，用于登录态接口和 A
 | [@ZhuMengMeng666](https://github.com/ZhuMengMeng666) | 补充单次部署连接多个 TeamSpeak 服务器的多机器人使用需求（[Issue #18](https://github.com/yichen11818/NeteaseTSBot/issues/18)）。 |
 
 也感谢所有试用、讨论和分享项目的朋友。欢迎通过 [贡献指南](CONTRIBUTING.md) 继续参与，或提交 PR 补充遗漏的贡献记录。
-
-## 相关项目
-
-- [WebSpeak-client-for-TeamSpeak](https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak)
 
 ## License
 
