@@ -474,6 +474,7 @@ The acknowledgments below are based on commit, pull request, and issue history. 
 | [@yichen11818](https://github.com/yichen11818) | Project creation and maintenance, core features, deployment support, documentation, and community support. |
 | [@BreadAira](https://github.com/BreadAira) | Fixes for Netease cookie parsing, Bilibili covers, shared audio files and Chromium in Docker deployments ([PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9), [Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)). |
 | [@Marius128](https://github.com/Marius128) | Optional TeamSpeak user levels, Bilibili chat playback commands, and accompanying documentation and tests ([PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)). |
+| [@nitonitori](https://github.com/nitonitori) | Netease automatic quality fallback on risk-control errors, direct playlist ID imports, and accompanying documentation and regression tests ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), merged). |
 
 ### Proposals, Reports, and Verification
 
@@ -481,7 +482,7 @@ The acknowledgments below are based on commit, pull request, and issue history. 
 | --- | --- |
 | [@yume2017cn](https://github.com/yume2017cn) | Proposed shuffle, playlist selection, queue clearing, and other chat commands; investigated search display and playback state. The chat requirements were subsequently reimplemented by the maintainer ([PR #10](https://github.com/yichen11818/NeteaseTSBot/pull/10)). |
 | [@Yz017](https://github.com/Yz017) | Submitted a project organization proposal ([PR #12](https://github.com/yichen11818/NeteaseTSBot/pull/12), not merged). |
-| [@nitonitori](https://github.com/nitonitori) | Proposed and tested Netease risk-control quality fallback, direct playlist ID imports, automatic continuation retries, and configurable chat quality ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), [#26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), awaiting review). |
+| [@nitonitori](https://github.com/nitonitori) | Proposed and tested automatic continuation retries and configurable chat quality ([PR #26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), awaiting review). |
 | [@Ideenaster](https://github.com/Ideenaster) | Detailed reproduction, root-cause analysis, a suggested fix, and playback verification for the repeat-all queue deletion bug ([Issue #13](https://github.com/yichen11818/NeteaseTSBot/issues/13)). |
 | [@TICK077](https://github.com/TICK077) | Investigated Netease and QQ Music deployment, search, and login issues, providing logs and API results ([Issue #11](https://github.com/yichen11818/NeteaseTSBot/issues/11)). |
 | [@screamingshark](https://github.com/screamingshark) | Reported and verified Docker frontend/backend connectivity issues and shared Netease VIP playback and API findings ([Issue #4](https://github.com/yichen11818/NeteaseTSBot/issues/4), [#7](https://github.com/yichen11818/NeteaseTSBot/issues/7)). |
