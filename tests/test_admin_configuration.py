@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -20,7 +21,7 @@ from backend.auth import (
 )
 from backend.config import settings
 from backend.db import Base
-from backend.models import AdminCredential
+from backend.models import AdminCredential, AppSetting
 from backend import managed_assets
 from backend.managed_assets import ASSET_BY_KEY, asset_path, delete_asset, save_asset, validate_image
 from backend.runtime_config import (
@@ -147,6 +148,68 @@ class RuntimeSettingsTests(unittest.TestCase):
         self.assertIn("voice", effects)
         self.assertEqual("ts.example.test", written["TSBOT_TS3_HOST"])
         self.assertTrue(written["TSBOT_VOICE_CONFIG_REVISION"])
+
+    def test_pcm_buffer_setting_has_safe_console_bounds_and_default(self) -> None:
+        field = next(item for item in settings_payload(self.session)["fields"] if item["key"] == "voice.pcm_buffer_seconds")
+        self.assertEqual((5, 1, 30, "integer", "backend", "voice"), (
+            field["value"], field["minimum"], field["maximum"], field["type"], field["group"], field["restart"],
+        ))
+        written = json.loads(self.voice_file.read_text())
+        self.assertEqual("5", written["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+
+    def test_pcm_buffer_save_stages_until_apply_and_reset_restores_default(self) -> None:
+        before = self.voice_file.read_text()
+        effects = update_settings(self.session, {"voice.pcm_buffer_seconds": 10}, apply=False)
+        self.assertIn("voice", effects)
+        self.assertEqual(before, self.voice_file.read_text())
+        self.assertTrue(settings_payload(self.session)["apply_pending"])
+        update_settings(self.session, {}, apply=True)
+        self.assertEqual("10", json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+        self.assertFalse(settings_payload(self.session)["apply_pending"])
+        update_settings(self.session, {"voice.pcm_buffer_seconds": None})
+        self.assertEqual("5", json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+
+    def test_pcm_buffer_rejects_invalid_values_without_partial_update(self) -> None:
+        definition = DEFINITION_BY_KEY["voice.pcm_buffer_seconds"]
+        name_definition = DEFINITION_BY_KEY["web.app_name"]
+        before_name = get_value(self.session, name_definition)
+        before_file = self.voice_file.read_text()
+        for invalid in (0, -1, 31, True, 1.5, "1.5", "invalid", "０"):
+            with self.subTest(value=invalid), self.assertRaises(HTTPException) as raised:
+                update_settings(self.session, {"voice.pcm_buffer_seconds": invalid, "web.app_name": "must-not-persist"})
+            self.assertEqual(422, raised.exception.status_code)
+            self.assertEqual(5, get_value(self.session, definition))
+            self.assertEqual(before_name, get_value(self.session, name_definition))
+            self.assertEqual(before_file, self.voice_file.read_text())
+
+    def test_pcm_buffer_boundaries_are_written_to_voice_configuration(self) -> None:
+        for seconds in (1, 30):
+            with self.subTest(seconds=seconds):
+                effects = update_settings(self.session, {"voice.pcm_buffer_seconds": seconds})
+                self.assertIn("voice", effects)
+                self.assertEqual(str(seconds), json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+
+    def test_pcm_buffer_imports_environment_once_and_persists(self) -> None:
+        definition = DEFINITION_BY_KEY["voice.pcm_buffer_seconds"]
+        self.session.delete(self.session.get(AppSetting, definition.key))
+        self.session.commit()
+        with patch.dict(os.environ, {"TSBOT_VOICE_PCM_BUFFER_SECONDS": "12"}):
+            initialize_runtime_settings(self.session)
+            self.assertEqual(12, get_value(self.session, definition))
+        with patch.dict(os.environ, {"TSBOT_VOICE_PCM_BUFFER_SECONDS": "3"}):
+            initialize_runtime_settings(self.session)
+            self.assertEqual(12, get_value(self.session, definition))
+            self.assertEqual("12", json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+
+    def test_pcm_buffer_invalid_environment_uses_safe_default(self) -> None:
+        definition = DEFINITION_BY_KEY["voice.pcm_buffer_seconds"]
+        for invalid in ("0", "31", "-1", "invalid", "1.5", "０"):
+            self.session.delete(self.session.get(AppSetting, definition.key))
+            self.session.commit()
+            with self.subTest(value=invalid), patch.dict(os.environ, {"TSBOT_VOICE_PCM_BUFFER_SECONDS": invalid}):
+                initialize_runtime_settings(self.session)
+                self.assertEqual(5, get_value(self.session, definition))
+                self.assertEqual("5", json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
 
     def test_save_only_stages_voice_change_until_apply(self) -> None:
         before = self.voice_file.read_text(encoding="utf-8")

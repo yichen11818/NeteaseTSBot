@@ -43,6 +43,10 @@ Netease features require your own `NeteaseCloudMusicApi` service. QQ Music and B
 
 For troubleshooting, run `docker compose -f docker-compose.prebuilt.yml logs --tail=100 backend voice-service`. See [source installation](#quick-start-recommended) and [Docker options](#docker-deployment) for more detail.
 
+The **PCM prefetch limit (seconds)** setting is available under system settings → advanced → services and logs. It defaults to 5 seconds and accepts integers from 1 to 30. It bounds decoded audio held ahead of playback for every source; a full buffer makes the reader wait without discarding frames or limiting track duration. The bounded reader channel adds about 1 second on Linux (4 seconds on Windows), and the decoder/process have their own overhead, so this is not a total process-memory limit.
+
+Save stages the change; Apply restarts Voice and interrupts active playback, following the existing Voice settings flow. `TSBOT_VOICE_PCM_BUFFER_SECONDS` seeds a new database setting or configures standalone Voice; existing persisted settings take precedence. Missing, non-integer or out-of-range standalone values fall back to 5 seconds. Unlimited buffering is not supported.
+
 ## Help build TSBot
 
 Deployment reports, reproducible bug reports, documentation, translations, and code are welcome. See the [contribution guide and starter tasks](CONTRIBUTING.md); you can work on one component at a time. Issues and pull requests in English or Chinese are welcome.

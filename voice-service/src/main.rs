@@ -1685,6 +1685,9 @@ async fn playback_loop(
     // Encode/send loop must keep a stable 20ms cadence to prevent TS3 jitter buffer underruns.
     // We decouple ffmpeg reads from the send cadence via a small PCM frame queue.
     let pcm_channel_capacity: usize = if cfg!(windows) { 200 } else { 50 };
+    let pcm_buffer_max_frames = pcm_buffer::max_frames_from_config(
+        env::var("TSBOT_VOICE_PCM_BUFFER_SECONDS").ok().as_deref(),
+    );
     let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(pcm_channel_capacity);
 
     let encoder = Encoder::new(
@@ -1791,7 +1794,7 @@ async fn playback_loop(
             _ = ticker.tick() => {}
         }
 
-        pcm_buffer::fill_pcm_buffer(&mut pcm_buf, &mut pcm_rx, frame_bytes);
+        pcm_buffer::fill_pcm_buffer(&mut pcm_buf, &mut pcm_rx, frame_bytes, pcm_buffer_max_frames);
 
         if !logged_first_pcm {
             if !pcm_buf.is_empty() {
