@@ -99,7 +99,7 @@ def _env_value(definition: SettingDefinition) -> Any:
             return definition.default
     if definition.type == "boolean":
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-    if definition.key in {"backend.netease_default_quality", "backend.qqmusic_default_quality"}:
+    if definition.type == "select":
         try:
             return validate_value(definition, raw)
         except ValueError:
