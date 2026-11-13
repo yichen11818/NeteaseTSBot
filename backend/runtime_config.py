@@ -12,6 +12,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .music_quality import NETEASE_QUALITIES
+from .queue_quality import QQMUSIC_QUALITIES
 from .crypto import decrypt_text, encrypt_text
 from .models import AppSetting
 from .logger import reconfigure_logger
@@ -41,7 +43,9 @@ class SettingDefinition:
 DEFINITIONS: tuple[SettingDefinition, ...] = (
     SettingDefinition("web.app_name", "web", "界面名称", env="TSBOT_WEB_APP_NAME", default="Yumi TSBot", backend_attr="web_app_name"),
     SettingDefinition("web.log_level", "web", "Web 日志等级", type="select", env="VITE_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARN", "ERROR"), backend_attr="web_log_level"),
-    SettingDefinition("backend.netease_api_base", "music", "网易云 API 地址", type="url", env="TSBOT_NETEASE_API_BASE", default="http://127.0.0.1:3000/", backend_attr="netease_api_base"),
+    SettingDefinition("backend.netease_api_base", "music_netease", "网易云 API 地址", type="url", env="TSBOT_NETEASE_API_BASE", default="http://127.0.0.1:3000/", backend_attr="netease_api_base"),
+    SettingDefinition("backend.netease_default_quality", "music_netease", "默认请求音质", type="select", env="TSBOT_NETEASE_DEFAULT_QUALITY", default="auto", options=NETEASE_QUALITIES, backend_attr="netease_default_quality", help="auto 为自动最高，不是跟随服务器。账号权限与平台风控可能限制实际播放音质；自动最高保留原有标准音质回退。只影响新点播。"),
+    SettingDefinition("backend.qqmusic_default_quality", "music_qqmusic", "默认请求音质", type="select", env="TSBOT_QQMUSIC_DEFAULT_QUALITY", default="320", options=QQMUSIC_QUALITIES, backend_attr="qqmusic_default_quality", help="当前适配器支持 M4A、MP3 128 和 MP3 320。请求音质不保证实际格式或完整歌曲，会员权限、资源与试听限制仍适用。只影响新点播。"),
     SettingDefinition("backend.voice_grpc_addr", "backend", "Voice gRPC 地址", env="TSBOT_VOICE_GRPC_ADDR", default="127.0.0.1:50051", backend_attr="voice_grpc_addr"),
     SettingDefinition("backend.log_level", "backend", "后端日志等级", type="select", env="TSBOT_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARNING", "ERROR"), backend_attr="log_level"),
     SettingDefinition("backend.log_file", "backend", "后端日志文件", env="TSBOT_LOG_FILE", default="logs/backend.log", backend_attr="log_file"),
@@ -95,6 +99,11 @@ def _env_value(definition: SettingDefinition) -> Any:
             return definition.default
     if definition.type == "boolean":
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    if definition.key in {"backend.netease_default_quality", "backend.qqmusic_default_quality"}:
+        try:
+            return validate_value(definition, raw)
+        except ValueError:
+            return definition.default
     return str(raw)
 
 
@@ -156,10 +165,11 @@ def validate_value(definition: SettingDefinition, value: Any) -> Any:
             raise ValueError("界面名称不能为空")
         if definition.type == "url" and not re.match(r"^https?://", value, re.IGNORECASE):
             raise ValueError("必须是 http:// 或 https:// 地址")
-        if definition.options and value.upper() not in definition.options:
-            raise ValueError("不支持的选项")
         if definition.options:
-            value = value.upper()
+            selected = next((option for option in definition.options if option.lower() == value.lower()), None)
+            if selected is None:
+                raise ValueError("不支持的选项")
+            value = selected
     return value
 
 

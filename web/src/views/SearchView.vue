@@ -23,6 +23,7 @@ import LoadingSpinner from '../components/LoadingSpinner.vue'
 import FloatingErrorToast from '../components/FloatingErrorToast.vue'
 import { getFavoriteSongKey, getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 import { buildNeteaseQueuePayload } from '../utils/queue'
+import { qqmusicQualityPayload } from '../utils/qqmusicQuality'
 import { useTransientMessage } from '../composables/useTransientMessage'
 import { DEMO_MODE } from '../demoMode'
 
@@ -263,7 +264,7 @@ async function enqueue(song: any, playNow: boolean) {
         title: getSongTitle(song),
         artist: getSongArtist(song),
         play_now: playNow,
-        quality: "320",
+        ...qqmusicQualityPayload(),
         album_mid: String(song.album?.mid || song.albummid || ""),
         duration_ms: getSongDurationMs(song),
       })

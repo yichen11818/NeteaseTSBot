@@ -278,8 +278,8 @@ B 站 `items` 里会使用 `video_id` / `webpage_url` 字段。
 | `album_mid` | string | 否 | QQ 音乐专辑 MID |
 | `duration_ms` | integer | 否 | 毫秒 |
 | `cover_url` | string | 否 | 封面图 URL |
-| `level` | string | 否 | 网易云音质等级，默认 `auto` |
-| `quality` | string | 否 | QQ 音乐音质，默认 `320` |
+| `level` | string/null | 否 | 网易云请求音质，省略/null 使用服务器网易云默认值；显式 `auto` 为自动最高 |
+| `quality` | string/null | 否 | QQ 音乐请求音质，支持 `m4a` / `128` / `320`；省略/null 使用服务器 QQ 默认值 |
 | `play_now` | boolean | 否 | 是否立即播放，默认 `false` |
 
 注意：
@@ -289,6 +289,8 @@ B 站 `items` 里会使用 `video_id` / `webpage_url` 字段。
 - B 站至少需要 `video_id` 或 `keywords` 之一
 - 网易云 `level` 支持：`auto`、`standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`
 - QQ 音乐实际入队和播放依赖服务端已配置管理员 QQ 音乐 cookie
+- 音质按来源独立校验，错误的平台字段或不支持的值返回 400。控制台分别设置网易云与 QQ 默认值；兼容默认分别为 `auto`、`320`。只影响新入队，重复播放/刷新地址保留队列原选择。请求音质不保证实际格式或完整歌曲，账号权限与试听限制仍适用。
+- Web 和外部历史重播是新入队，省略音质使用当前服务器默认值；可用查询参数 `level`（网易云）或 `quality`（QQ）明确覆盖。`GET /config/public` 的 `music_quality` 返回各来源的 `default` 和 `options`，不含凭据。详见 [音质配置](MUSIC_QUALITY.md)。
 - B 站播放时会由后端下载音频到本地缓存后，再交给 `voice-service` 播放
 
 按关键词直接播放示例：

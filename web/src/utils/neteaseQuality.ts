@@ -1,6 +1,7 @@
 export const NETEASE_QUALITY_STORAGE_KEY = 'tsbot:netease:quality'
 
 export const NETEASE_QUALITY_OPTIONS = [
+  { value: 'server', label: '跟随服务器' },
   { value: 'auto', label: '自动最高' },
   { value: 'standard', label: '标准' },
   { value: 'higher', label: '较高' },
@@ -22,12 +23,12 @@ export function normalizeNeteaseQualityLevel(value: unknown): NeteaseQualityLeve
   if (NETEASE_QUALITY_VALUES.has(raw)) {
     return raw as NeteaseQualityLevel
   }
-  return 'auto'
+  return 'server'
 }
 
 export function getNeteaseQualityLevel(): NeteaseQualityLevel {
   if (typeof localStorage === 'undefined') {
-    return 'auto'
+    return 'server'
   }
   return normalizeNeteaseQualityLevel(localStorage.getItem(NETEASE_QUALITY_STORAGE_KEY))
 }
@@ -42,5 +43,9 @@ export function setNeteaseQualityLevel(value: unknown): NeteaseQualityLevel {
 
 export function getNeteaseQualityLabel(value: unknown): string {
   const normalized = normalizeNeteaseQualityLevel(value)
-  return NETEASE_QUALITY_OPTIONS.find((option) => option.value === normalized)?.label || '自动最高'
+  return NETEASE_QUALITY_OPTIONS.find((option) => option.value === normalized)?.label || '跟随服务器'
+}
+
+export function neteaseQualityPayload(value = getNeteaseQualityLevel()): { level?: Exclude<NeteaseQualityLevel, 'server'> } {
+  return value === 'server' ? {} : { level: value }
 }
