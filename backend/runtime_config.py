@@ -69,6 +69,7 @@ DEFINITIONS: tuple[SettingDefinition, ...] = (
     SettingDefinition("voice.serverquery_sid", "serverquery", "虚拟服务器 SID", env="TSBOT_TS3_SERVERQUERY_SID", restart="voice"),
     SettingDefinition("voice.serverquery_use_port", "serverquery", "语音端口映射", type="integer", env="TSBOT_TS3_SERVERQUERY_USE_PORT", default=9987, minimum=1, maximum=65535, restart="voice"),
     SettingDefinition("voice.log_level", "backend", "Voice 日志等级", type="select", env="TSBOT_VOICE_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARNING", "ERROR"), restart="voice"),
+    SettingDefinition("voice.pcm_buffer_seconds", "backend", "PCM 预缓冲上限（秒）", type="integer", env="TSBOT_VOICE_PCM_BUFFER_SECONDS", default=5, minimum=1, maximum=30, restart="voice", help="限制提前解码的音频量，不限制歌曲时长。缓冲满后等待播放消耗，不丢帧或跳歌；应用配置后 Voice 会重启。读取通道另有少量有界缓冲。"),
     SettingDefinition("voice.state_file", "backend", "播放状态文件", env="TSBOT_VOICE_STATE_FILE", default="./logs/voice_state.json", restart="voice"),
 )
 
@@ -88,6 +89,11 @@ def _env_value(definition: SettingDefinition) -> Any:
         raw = getattr(settings, definition.backend_attr, None)
     if raw is None or raw == "":
         return definition.default
+    if definition.key == "voice.pcm_buffer_seconds":
+        try:
+            return validate_value(definition, raw)
+        except (TypeError, ValueError):
+            return definition.default
     if definition.type == "integer":
         try:
             return int(raw)
@@ -140,6 +146,11 @@ def get_value(session: Session, definition: SettingDefinition) -> Any:
 
 def validate_value(definition: SettingDefinition, value: Any) -> Any:
     if definition.type == "integer":
+        if definition.key == "voice.pcm_buffer_seconds" and not (
+            isinstance(value, int)
+            or (isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()))
+        ):
+            raise ValueError("必须是整数")
         if isinstance(value, bool):
             raise ValueError("必须是整数")
         value = int(value)
