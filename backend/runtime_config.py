@@ -108,7 +108,7 @@ def _env_value(definition: SettingDefinition) -> Any:
             return definition.default
     if definition.type == "boolean":
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-    if definition.group == "recovery" and definition.type == "select":
+    if definition.type == "select":
         try:
             return validate_value(definition, raw)
         except ValueError:

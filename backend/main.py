@@ -3566,11 +3566,11 @@ async def _enqueue_qqmusic_song(
     duration_ms: int | None = None,
 ) -> tuple[int, bool]:
     """Enqueue a QQ Music song"""
-    quality = quality if quality in QQMUSIC_QUALITIES else "320"
-    item: QueueItem | None = None
     session = new_session()
     play_request_generation: int | None = None
+    item: QueueItem | None = None
     try:
+        quality = quality if quality in QQMUSIC_QUALITIES else "320"
         if play_now:
             play_request_generation = await _begin_play_request()
         # Use admin QQ Music cookie (server-side), like netease.
