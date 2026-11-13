@@ -450,6 +450,9 @@ class QQMusicClient:
             
             print(f"[DEBUG] Failed to get URL - sip empty: {not sip}, midurlinfo empty: {not midurlinfo}")
             return None
+        except httpx.HTTPError:
+            # Keep transport/rate-limit errors distinguishable from missing or paid tracks.
+            raise
         except Exception as e:
             print(f"[DEBUG] Exception in get_music_url_simple: {e}")
             return None

@@ -341,7 +341,8 @@ class PlaybackCompletionTests(unittest.IsolatedAsyncioTestCase):
 
         replay.assert_not_awaited()
         delete_item.assert_awaited_once_with(8)
-        play_next.assert_awaited_once_with(start_after_id=8)
+        play_next.assert_awaited_once()
+        self.assertEqual(8, play_next.await_args.kwargs['start_after_id'])
 
 
 class PlaybackQueueCompletionTests(unittest.IsolatedAsyncioTestCase):
