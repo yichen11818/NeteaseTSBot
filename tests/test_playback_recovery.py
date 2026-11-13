@@ -144,6 +144,41 @@ class AutoPlayRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([10, 20, 30], self.queued())
         self.play.assert_not_awaited()
 
+    async def test_superseded_manual_selection_failure_does_not_restart_cancelled_target(self):
+        original = self.resolver.side_effect
+        for action in ['stop', 'pause', 'select another']:
+            with self.subTest(action=action):
+                entered = asyncio.Event()
+                release = asyncio.Event()
+
+                async def resolve(**kwargs):
+                    if kwargs['song_id'] == '20':
+                        entered.set()
+                        await release.wait()
+                        raise HTTPException(503, 'late failure')
+                    return await original(**kwargs)
+
+                self.resolver.side_effect = resolve
+                await main._play_queue_item_internal(10, requested_by='test')
+                with self.sessions() as session:
+                    request = asyncio.create_task(main.play_queue_item(20, session=session))
+                    await asyncio.wait_for(entered.wait(), timeout=1)
+                    if action == 'select another':
+                        await main.play_queue_item(30, session=session)
+                    elif action == 'stop':
+                        await main.voice_stop()
+                    else:
+                        await main.voice_pause()
+                    release.set()
+                    try:
+                        with self.assertRaises(HTTPException) as error:
+                            await request
+                        self.assertEqual(409, error.exception.status_code)
+                        self.assertIsNone(main._auto_play_retry_task)
+                        self.assertEqual({'stop': None, 'pause': 10, 'select another': 30}[action], main._current_queue_item_id)
+                    finally:
+                        await self.cancel_retry()
+
     async def test_bilibili_transient_fallback_failure_recovers_through_real_download_chain(self):
         real_client = httpx.Client
         views = 0

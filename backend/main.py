@@ -4446,7 +4446,14 @@ async def _continue_auto_play(
                 # Explicit selection must report its own first failure. Automatic
                 # traversal may remove unavailable entries and choose another.
                 recovery.failed_item_id = preferred_item_id
-                if not await _play_queue_item_internal(preferred_item_id, requested_by=requested_by):
+                generation_before_play = _play_request_generation
+                try:
+                    played = await _play_queue_item_internal(preferred_item_id, requested_by=requested_by)
+                except (HTTPException, httpx.HTTPError) as exc:
+                    if _play_request_generation != generation_before_play + 1:
+                        raise HTTPException(status_code=409, detail="playback request was superseded by a newer command") from exc
+                    raise
+                if not played:
                     raise HTTPException(status_code=404, detail="queue item not found")
                 return
             else:
