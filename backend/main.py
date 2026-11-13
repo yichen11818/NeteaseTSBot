@@ -2582,9 +2582,19 @@ async def voice_play() -> dict:
 
 @app.post("/voice/pause")
 async def voice_pause() -> dict:
+    global _paused_at
+    async with _playback_lock:
+        previous_paused_at = _paused_at
+        item_id = _current_queue_item_id
     await _mark_playback_paused()
-    await _invalidate_play_requests()
-    await voice.pause()
+    generation = await _invalidate_play_requests()
+    try:
+        await voice.pause()
+    except Exception:
+        async with _playback_lock:
+            if generation == _play_request_generation and item_id == _current_queue_item_id:
+                _paused_at = previous_paused_at
+        raise
     return {"ok": True}
 
 
