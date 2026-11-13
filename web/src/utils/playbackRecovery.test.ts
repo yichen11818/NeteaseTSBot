@@ -12,4 +12,13 @@ describe('playback recovery status', () => {
       .toBe('歌曲 #20 暂时不可用，冷却 300 秒后再试')
     expect(recoveryMessage({ pending: false }, 0)).toBe('')
   })
+
+  it('renders a safe reason category in retry and cooldown states', () => {
+    for (const phase of ['retry', 'cooldown'] as const) {
+      expect(recoveryMessage({ pending: true, phase, last_reason: 'rate_limited' }, 0))
+        .toContain('请求限流')
+    }
+    expect(recoveryMessage({ pending: true, last_reason: 'https://signed.example/secret' }, 0))
+      .not.toContain('signed.example')
+  })
 })

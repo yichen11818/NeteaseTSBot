@@ -263,6 +263,31 @@ class AutoPlayRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(20, main._current_queue_item_id)
         self.assertEqual([20], self.queued())
 
+    async def test_permanently_unavailable_next_track_does_not_end_deferred_recovery(self):
+        original = self.resolver.side_effect
+
+        async def resolve(**kwargs):
+            if kwargs['song_id'] == '30':
+                raise HTTPException(404, 'permanently unavailable')
+            return await original(**kwargs)
+
+        self.resolver.side_effect = resolve
+        await self.finish_with_failure(failures=4)
+        await self.wait_retry()
+        self.assertEqual(20, main._current_queue_item_id)
+        self.assertIn(300, self.delays)
+        self.assertEqual([20], self.queued())
+
+    async def test_old_completion_or_error_after_pause_does_not_resume_or_delete(self):
+        for handler in [main._handle_playback_finished, main._handle_playback_error]:
+            await main._play_queue_item_internal(10, requested_by='test')
+            await main.voice_pause()
+            await handler('stream:10')
+            self.assertEqual(10, main._current_queue_item_id)
+            self.assertIsNone(main._auto_play_retry_task)
+            self.assertEqual(0, self.calls['20'])
+            self.assertEqual([10, 20, 30], self.queued())
+
     async def test_manual_queue_play_failure_arranges_recovery(self):
         self.failures['10'] = 1
         with self.assertRaises(HTTPException):

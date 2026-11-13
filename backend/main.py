@@ -558,6 +558,8 @@ async def _take_now_playing_if_match(*, source_url: str) -> int | None:
     global _current_artist, _current_album, _current_artwork_url
     src = (source_url or "").strip()
     async with _playback_lock:
+        if _paused_at is not None:
+            return None
         if not _current_queue_item_id:
             return None
         if not _current_source_url:
@@ -976,6 +978,7 @@ class _QueueRecovery:
     failed_item_id: int | None = None
     excluded_ids: set[int] = field(default_factory=set)
     requested_by: str = "auto"
+    superseded: bool = False
 
 
 
@@ -1013,6 +1016,8 @@ async def _auto_play_next_from_queue(
                 return True
         except (HTTPException, httpx.HTTPError) as exc:
             if _play_request_generation != generation_before_play + 1:
+                if recovery is not None:
+                    recovery.superseded = True
                 return False
             if not isinstance(exc, HTTPException) or exc.status_code not in (402, 403, 404, 410):
                 if recovery is not None:
@@ -1025,6 +1030,8 @@ async def _auto_play_next_from_queue(
             except Exception:
                 pass
             if _play_request_generation != generation_before_play + 1:
+                if recovery is not None:
+                    recovery.superseded = True
                 return False
         if recovery is not None:
             recovery.preferred_item_id = None
@@ -2575,9 +2582,9 @@ async def voice_play() -> dict:
 
 @app.post("/voice/pause")
 async def voice_pause() -> dict:
+    await _mark_playback_paused()
     await _invalidate_play_requests()
     await voice.pause()
-    await _mark_playback_paused()
     return {"ok": True}
 
 
@@ -4367,6 +4374,7 @@ async def _auto_play_continuation_attempt(
                 return True
         except (HTTPException, httpx.HTTPError) as exc:
             if _play_request_generation != generation_before_play + 1:
+                recovery.superseded = True
                 return False
             if not isinstance(exc, HTTPException) or exc.status_code not in (402, 403, 404, 410):
                 recovery.failed_item_id = item_id
@@ -4422,7 +4430,7 @@ async def _continue_auto_play(
         if initial_failure is None:
             if await _auto_play_continuation_attempt(item_id, repeat_finished=repeat_finished, recovery=recovery):
                 return
-            if not recovery.excluded_ids:
+            if recovery.superseded or not recovery.excluded_ids:
                 return
     except (HTTPException, httpx.HTTPError) as exc:
         if not _is_transient_playback_error(exc):
@@ -4511,8 +4519,11 @@ async def _continue_auto_play(
                 try:
                     if await _auto_play_continuation_attempt(cursor_id, repeat_finished=repeat_current, recovery=recovery):
                         return
-                    if not recovery.excluded_ids:
+                    if recovery.superseded or not recovery.excluded_ids:
                         return
+                    # Permanent failures also create play requests while walking
+                    # the queue. Keep our own intent increments for the next pass.
+                    generation = _play_request_generation
                     pending_error = None
                 except (HTTPException, httpx.HTTPError) as exc:
                     if not _is_transient_playback_error(exc):
