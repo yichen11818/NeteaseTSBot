@@ -7,7 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt \
+# Playwright's Node must start before --with-deps can install browser libraries.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 \
+    && pip install --no-cache-dir -r /app/backend/requirements.txt \
     && python -m playwright install --with-deps chromium \
     && python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True, args=['--disable-dev-shm-usage', '--no-sandbox']); b.close(); p.stop()" \
     && rm -rf /var/lib/apt/lists/*
