@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     bilibili_audio_cache_ttl_hours: int = 72
     bilibili_audio_cache_max_mb: int = 2048
     bilibili_audio_partial_ttl_minutes: int = 60
+    playback_recovery_enabled: bool = True
+    playback_retry_count: int = 3
+    playback_retry_initial_delay_seconds: int = 15
+    playback_retry_max_delay_seconds: int = 60
+    playback_exhausted_action: str = "SKIP"
+    playback_cooldown_seconds: int = 300
+    playback_failed_tracks_before_cooldown: int = 3
 
     def get_api_tokens(self) -> list[str]:
         tokens: list[str] = []

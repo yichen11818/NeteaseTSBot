@@ -20,6 +20,11 @@
         {{ error }}
       </div>
       
+      <div v-if="recovery.pending" role="status" aria-live="polite" class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <span>{{ pendingRecoveryMessage }}</span>
+        <button class="rounded border border-amber-300 px-2 py-1 hover:bg-amber-100" @click="stopRecovery">停止并取消重试</button>
+      </div>
+
       <!-- Main player content -->
       <div class="flex items-center justify-between gap-2 sm:gap-4 h-14">
         <!-- Track info -->
@@ -307,6 +312,7 @@ import {
   ChevronDown,
 } from 'lucide-vue-next'
 import { apiGet, apiPost, apiPut } from '../api'
+import { recoveryMessage, type PlaybackRecoveryStatus } from '../utils/playbackRecovery'
 import { isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 import {
   NETEASE_QUALITY_OPTIONS,
@@ -355,6 +361,18 @@ const playerState = ref<PlayerState>({
 })
 
 const error = ref('')
+const recovery = ref<PlaybackRecoveryStatus>({ pending: false })
+const recoveryUpdatedAt = ref(Date.now())
+const pendingRecoveryMessage = computed(() => recoveryMessage(recovery.value, recoveryUpdatedAt.value))
+
+async function stopRecovery() {
+  try {
+    await apiPost('/voice/stop', {})
+    await loadPlayerState()
+  } catch (e: any) {
+    error.value = e.message || '停止失败'
+  }
+}
 const isLiked = ref(false)
 const neteaseQuality = ref<NeteaseQualityLevel>(getNeteaseQualityLevel())
 const showQualityMenu = ref(false)
@@ -664,6 +682,8 @@ async function toggleLike() {
 async function loadPlayerState() {
   try {
     const state = await apiGet<any>('/voice/status')
+    recovery.value = state.recovery ?? { pending: false }
+    recoveryUpdatedAt.value = Date.now()
     
     const wasPlaying = playerState.value.isPlaying
     const previousTrackId = currentTrack.value?.id
@@ -713,7 +733,7 @@ function updatePollInterval(wasPlaying: boolean, previousTrackId: number | undef
   const trackChanged = state.track_id !== previousTrackId
   
   // Fast polling when playing or track just changed
-  if (isPlaying || trackChanged || (wasPlaying !== isPlaying)) {
+  if (state.recovery?.pending || isPlaying || trackChanged || (wasPlaying !== isPlaying)) {
     pollInterval = 1000
   }
   // Slower polling when paused/idle for more than 30 seconds

@@ -49,6 +49,7 @@ interface ManagedAsset {
 }
 
 const GROUPS = [
+  { id: 'recovery', label: '播放恢复', section: 'common', summary: '重试、暂时跳过与冷却等待', description: '音乐源暂时不可用时自动恢复。保存并应用后，新一轮恢复使用新配置；关闭自动恢复会立即取消等待，不中断正常播放。' },
   { id: 'teamspeak', label: 'TeamSpeak 连接', section: 'common', summary: '服务器、频道与机器人资料', description: '设置机器人要加入的语音服务器和频道，以及机器人在 TeamSpeak 中显示的昵称、头像与简介。' },
   { id: 'authorization', label: '音乐账号登录', section: 'common', summary: '网易云、QQ 音乐与 B 站账号', description: '连接你的音乐平台账号，用于读取个人歌单、收藏及账号有权限使用的音乐内容。各平台分别登录。' },
   { id: 'music', label: '音乐接口与缓存', section: 'common', summary: '音乐服务地址与下载限制', description: '配置网易云音乐 API 地址，以及 B 站点播时长和音频缓存大小。QQ 音乐与 B 站使用内建接口，无需填写服务地址。' },
