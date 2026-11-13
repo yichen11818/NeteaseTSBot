@@ -164,15 +164,16 @@
           </div>
           
           <button
-            class="p-2 text-gray-500 hover:text-gray-900 transition-colors border-l border-gray-200 pl-4 ml-1 hidden sm:block"
+            class="p-2 text-gray-500 hover:text-gray-900 transition-colors border-l border-gray-200 pl-4 ml-1"
+            title="音效与音质偏好"
             @click="toggleFxPanel"
           >
             <MoreHorizontal :size="20" />
           </button>
 
-          <div v-if="showFxPanel" class="theme-floating-panel absolute bottom-full right-4 mb-3 w-80 bg-white border border-gray-200 rounded-xl shadow-xl p-4">
+          <div v-if="showFxPanel" class="theme-floating-panel absolute bottom-full right-4 mb-3 w-80 max-h-[80vh] overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-4">
             <div class="flex items-center justify-between mb-3">
-              <div class="text-sm font-semibold text-gray-900">音效</div>
+              <div class="text-sm font-semibold text-gray-900">音效与音质偏好</div>
               <button class="p-1 text-gray-400 hover:text-gray-700" @click="showFxPanel = false">✕</button>
             </div>
 
@@ -248,7 +249,8 @@
 
               <!-- Netease Quality Setting -->
               <div class="pt-2 border-t border-gray-100">
-                <div class="text-xs font-semibold uppercase tracking-[0.24em] text-gray-400 mb-2">网易云默认音质</div>
+                <div class="text-xs font-semibold text-gray-600 mb-1">网易云请求音质</div>
+                <p class="text-xs text-gray-500 mb-2">服务器默认：{{ serverNeteaseLabel }}</p>
                 <div class="grid grid-cols-2 gap-2">
                   <button
                     v-for="option in NETEASE_QUALITY_OPTIONS"
@@ -264,6 +266,15 @@
                     {{ option.label }}
                   </button>
                 </div>
+              </div>
+
+              <div class="pt-2 border-t border-gray-100">
+                <label for="qqmusic-quality" class="text-xs font-semibold text-gray-600">QQ 音乐请求音质</label>
+                <p class="text-xs text-gray-500 my-2">服务器默认：{{ serverQQMusicLabel }}</p>
+                <select id="qqmusic-quality" class="w-full rounded border border-gray-200 px-2 py-2 text-sm" :value="qqmusicQuality" @change="updateQQMusicQuality(($event.target as HTMLSelectElement).value)">
+                  <option v-for="option in QQMUSIC_QUALITY_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+                <p class="mt-2 text-xs text-gray-500">偏好仅用于此浏览器的新点播。跟随服务器使用平台各自的默认值；权限与试听限制仍适用。</p>
               </div>
 
               <div class="flex items-center justify-end gap-2 pt-2">
@@ -314,6 +325,7 @@ import {
 import { apiGet, apiPost, apiPut } from '../api'
 import { recoveryMessage, type PlaybackRecoveryStatus } from '../utils/playbackRecovery'
 import { isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
+import { getQQMusicQuality, setQQMusicQuality, QQMUSIC_QUALITY_OPTIONS } from '../utils/qqmusicQuality'
 import {
   NETEASE_QUALITY_OPTIONS,
   getNeteaseQualityLabel,
@@ -375,6 +387,21 @@ async function stopRecovery() {
 }
 const isLiked = ref(false)
 const neteaseQuality = ref<NeteaseQualityLevel>(getNeteaseQualityLevel())
+const qqmusicQuality = ref(getQQMusicQuality())
+const serverQuality = ref<{ netease?: { default: string }; qqmusic?: { default: string } }>({})
+const serverNeteaseLabel = computed(() => serverQuality.value.netease ? getNeteaseQualityLabel(serverQuality.value.netease.default) : '加载中')
+const serverQQMusicLabel = computed(() => QQMUSIC_QUALITY_OPTIONS.find(option => option.value === serverQuality.value.qqmusic?.default)?.label ?? '加载中')
+
+async function loadServerQuality() {
+  try {
+    const config = await apiGet<{ music_quality?: typeof serverQuality.value }>('/config/public')
+    serverQuality.value = config.music_quality ?? {}
+  } catch { /* The next opening refreshes server defaults. */ }
+}
+
+function updateQQMusicQuality(value: string) {
+  qqmusicQuality.value = setQQMusicQuality(value)
+}
 const showQualityMenu = ref(false)
 const qualityMenuRef = ref<HTMLElement | null>(null)
 
@@ -470,6 +497,7 @@ function toggleFxPanel() {
   showFxPanel.value = !showFxPanel.value
   if (showFxPanel.value) {
     void loadFx()
+    void loadServerQuality()
   }
 }
 

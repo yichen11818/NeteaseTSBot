@@ -63,6 +63,8 @@ from .netease import NeteaseClient
 from .netease_cookie import extract_netease_auth_cookie, has_netease_auth_cookie
 from .qqmusic import QQMusicClient
 from .voice_client import VoiceClient, VoiceStatus
+from .music_quality import NETEASE_QUALITIES
+from .queue_quality import QQMUSIC_QUALITIES, encode_qqmusic_source, qqmusic_queue_quality, strip_qqmusic_source
 from .config import settings
 from .logger import logger
 from .playback_recovery import RecoveryPolicy
@@ -232,22 +234,24 @@ class AddQueueRequest(BaseModel):
 
 
 class AddNeteaseQueueRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     song_id: str
     title: str
     artist: str = ""
     album: str = ""
     duration_ms: int | None = None
     cover_url: str = ""
-    level: str = "auto"
+    level: str | None = None
     play_now: bool = False
 
 
 class AddQQMusicQueueRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     song_mid: str
     title: str
     artist: str = ""
     play_now: bool = False
-    quality: str = "320"
+    quality: str | None = None
     album_mid: str = ""
     duration_ms: int | None = None
 
@@ -298,8 +302,8 @@ class ExternalQueueRequest(BaseModel):
     album_mid: str = ""
     duration_ms: int | None = None
     cover_url: str = ""
-    level: str = "auto"
-    quality: str = "320"
+    level: str | None = None
+    quality: str | None = None
     play_now: bool = False
 
 
@@ -1141,6 +1145,22 @@ def _normalize_netease_quality_level(value: object, *, default: str = "auto", st
         supported = ", ".join(("auto",) + _NETEASE_QUALITY_LEVELS)
         raise HTTPException(status_code=400, detail=f"invalid netease level, supported: {supported}")
     return default
+
+
+def _resolve_enqueue_quality(provider: str, value: str | None) -> str:
+    if value is None:
+        value = settings.netease_default_quality if provider == "netease" else settings.qqmusic_default_quality
+    raw = str(value).strip().lower()
+    if provider == "netease" and raw:
+        return _normalize_netease_quality_level(raw, strict=True)
+    if provider == "qqmusic" and raw in QQMUSIC_QUALITIES:
+        return raw
+    raise HTTPException(status_code=400, detail=f"invalid {provider} requested quality")
+
+
+def _validate_quality_fields(provider: str, level: str | None, quality: str | None) -> None:
+    if (provider != "netease" and level is not None) or (provider != "qqmusic" and quality is not None):
+        raise HTTPException(status_code=400, detail="quality field does not match the requested source")
 
 
 def _resolve_netease_request_level(level: str) -> str:
@@ -3485,13 +3505,13 @@ async def _enqueue_netease_song(
     album: str = "",
     duration_ms: int | None = None,
     artwork_url: str = "",
-    quality_level: str = "auto",
+    quality_level: str | None = None,
 ) -> tuple[int, bool]:
     item: QueueItem | None = None
     session = new_session()
     play_request_generation: int | None = None
     try:
-        normalized_level = _normalize_netease_quality_level(quality_level, strict=True)
+        normalized_level = _resolve_enqueue_quality("netease", quality_level)
         if not play_now:
             item = QueueItem(
                 track_id=f"netease:{song_id}",
@@ -3563,11 +3583,12 @@ async def _enqueue_qqmusic_song(
     artist: str,
     play_now: bool,
     requested_by: str,
-    quality: str = "320",
+    quality: str | None = None,
     album_mid: str = "",
     duration_ms: int | None = None,
 ) -> tuple[int, bool]:
     """Enqueue a QQ Music song"""
+    quality = _resolve_enqueue_quality("qqmusic", quality)
     session = new_session()
     play_request_generation: int | None = None
     item: QueueItem | None = None
@@ -4082,7 +4103,6 @@ async def _handle_chat_command(
                         album=str(normalized.get("album") or ""),
                         duration_ms=normalized.get("duration_ms"),
                         artwork_url=str(normalized.get("artwork_url") or ""),
-                        quality_level="auto",
                     )
                     added += 1
                 except Exception:
@@ -4313,7 +4333,6 @@ async def _handle_chat_command(
                 artist=artist,
                 play_now=(cmd == "play"),
                 requested_by=invoker_name,
-                quality_level="auto",
             )
             song_label = f"{title} - {artist}".strip(" -")
             extra = ""
@@ -4664,6 +4683,10 @@ def public_config() -> dict:
         "app_name": settings.web_app_name,
         "app_icon": icon.public_path if asset_path(icon).is_file() else "",
         "log_level": settings.web_log_level,
+        "music_quality": {
+            "netease": {"default": _resolve_enqueue_quality("netease", None), "options": list(NETEASE_QUALITIES)},
+            "qqmusic": {"default": _resolve_enqueue_quality("qqmusic", None), "options": list(QQMUSIC_QUALITIES)},
+        },
     }
 
 
@@ -5252,10 +5275,14 @@ async def _replay_history_item(
     *,
     play_now: bool,
     requested_by: str,
+    level: str | None = None,
+    quality: str | None = None,
 ) -> dict:
     track_id = str(hist_item.track_id or "").strip()
     if not track_id:
         raise HTTPException(status_code=400, detail="history track_id is empty")
+
+    _validate_quality_fields(track_id.split(":", 1)[0], level, quality)
 
     if track_id.startswith("netease:"):
         song_id = track_id.split(":", 1)[1].strip()
@@ -5271,6 +5298,7 @@ async def _replay_history_item(
             album=hist_item.album,
             duration_ms=hist_item.duration,
             artwork_url=hist_item.cover_url,
+            quality_level=level,
         )
         return {
             "ok": True,
@@ -5327,7 +5355,7 @@ async def _replay_history_item(
             artist=str(hist_item.artist or ""),
             play_now=play_now,
             requested_by=requested_by,
-            quality="320",
+            quality=quality,
             album_mid="",
             duration_ms=hist_item.duration,
         )
@@ -5352,6 +5380,8 @@ async def _replay_history_item(
 async def replay_from_history(
     history_id: int,
     play_now: bool = True,
+    level: str | None = None,
+    quality: str | None = None,
     session: Session = Depends(get_session)
 ) -> dict:
     """Replay a track from history using its track_id to get a fresh playable source"""
@@ -5360,7 +5390,7 @@ async def replay_from_history(
         raise HTTPException(status_code=404, detail="History item not found")
 
     try:
-        return await _replay_history_item(hist_item, play_now=play_now, requested_by="web_history")
+        return await _replay_history_item(hist_item, play_now=play_now, requested_by="web_history", level=level, quality=quality)
     except HTTPException as e:
         if e.status_code in (402, 403):
             raise HTTPException(
@@ -5472,6 +5502,7 @@ async def external_search(
 @app.post("/external/queue", tags=["External API"])
 async def external_add_queue(req: ExternalQueueRequest) -> dict:
     provider = (req.source or "netease").strip().lower()
+    _validate_quality_fields(provider, req.level, req.quality)
     keywords = (req.keywords or "").strip()
     play_now = bool(req.play_now)
 
@@ -5482,7 +5513,7 @@ async def external_add_queue(req: ExternalQueueRequest) -> dict:
         album = (req.album or "").strip()
         cover_url = (req.cover_url or "").strip()
         duration_ms = req.duration_ms
-        level = _normalize_netease_quality_level(req.level, strict=True)
+        level = _resolve_enqueue_quality("netease", req.level)
 
         if not song_id:
             if not keywords:
@@ -5614,7 +5645,7 @@ async def external_add_queue(req: ExternalQueueRequest) -> dict:
         album = (req.album or "").strip()
         album_mid = (req.album_mid or "").strip()
         duration_ms = req.duration_ms
-        quality = (req.quality or "320").strip() or "320"
+        quality = _resolve_enqueue_quality("qqmusic", req.quality)
         cover_url = (req.cover_url or "").strip()
 
         if not song_mid:
@@ -5704,12 +5735,14 @@ def external_history(session: Session = Depends(get_session)) -> dict:
 async def external_replay_history(
     history_id: int,
     play_now: bool = True,
+    level: str | None = None,
+    quality: str | None = None,
     session: Session = Depends(get_session),
 ) -> dict:
     hist_item = session.get(HistoryItem, history_id)
     if not hist_item:
         raise HTTPException(status_code=404, detail="History item not found")
-    return await _replay_history_item(hist_item, play_now=play_now, requested_by="external_history")
+    return await _replay_history_item(hist_item, play_now=play_now, requested_by="external_history", level=level, quality=quality)
 
 
 # 网易云音乐扩展功能 API

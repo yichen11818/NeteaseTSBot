@@ -30,6 +30,8 @@ const initialSettings = () => ({
   'web.app_name': 'TSBot 在线体验',
   'backend.voice_grpc_addr': 'voice-service:50051',
   'backend.netease_api_base': 'http://netease-api:3000/',
+  'backend.netease_default_quality': 'auto',
+  'backend.qqmusic_default_quality': '320',
   'voice.ts3_host': 'ts.example.com',
   'voice.ts3_port': 9987,
   'voice.ts3_nickname': 'TSBot Demo',
@@ -43,6 +45,12 @@ const labels: Record<string, string> = {
   'backend.netease_api_base': '网易云 API 地址', 'voice.ts3_host': 'TeamSpeak 服务器',
   'voice.ts3_port': 'TeamSpeak 端口', 'voice.ts3_nickname': '机器人昵称',
   'voice.ts3_channel_id': '频道 ID', 'voice.ts3_channel_path': '频道路径',
+  'backend.netease_default_quality': '默认请求音质', 'backend.qqmusic_default_quality': '默认请求音质',
+}
+
+const qualityOptions: Record<string, string[]> = {
+  'backend.netease_default_quality': ['auto', 'standard', 'higher', 'exhigh', 'lossless', 'hires', 'jyeffect', 'sky', 'dolby', 'jymaster'],
+  'backend.qqmusic_default_quality': ['m4a', '128', '320'],
 }
 
 export function resetDemo() {
@@ -75,10 +83,10 @@ function advance(direction: number) {
 }
 function payload() {
   return { fields: Object.entries(settings).map(([key, value]) => ({
-    key, value, label: labels[key], group: key.startsWith('voice.') ? 'teamspeak' : key === 'backend.netease_api_base' ? 'music' : key.startsWith('web.') ? 'web' : 'backend',
-    type: typeof value === 'number' ? 'integer' : key.endsWith('_base') ? 'url' : 'string',
+    key, value, label: labels[key], group: key.includes('netease_') ? 'music_netease' : key.includes('qqmusic_') ? 'music_qqmusic' : key.startsWith('voice.') ? 'teamspeak' : key.startsWith('web.') ? 'web' : 'backend',
+    type: qualityOptions[key] ? 'select' : typeof value === 'number' ? 'integer' : key.endsWith('_base') ? 'url' : 'string',
     sensitive: false, configured: true, restart: key.startsWith('voice.') ? 'voice' : 'none',
-    minimum: key.endsWith('_port') ? 1 : null, maximum: key.endsWith('_port') ? 65535 : null, options: [], help: '',
+    minimum: key.endsWith('_port') ? 1 : null, maximum: key.endsWith('_port') ? 65535 : null, options: qualityOptions[key] ?? [], help: qualityOptions[key] ? '请求音质不保证实际格式或完整歌曲；平台权限与试听限制仍适用。' : '',
   })), assets: [], bootstrap: { demo: true }, apply_pending: applyPending }
 }
 function check(id: string, label: string, detail: string) {
@@ -94,7 +102,10 @@ export function demoRequest(path: string, init: RequestInit = {}): unknown {
   updateClock()
   let result: unknown
   if (method === 'GET' && route === '/auth/status') result = auth
-  else if (method === 'GET' && route === '/config/public') result = { app_name: settings['web.app_name'], app_icon: '', log_level: 'WARN' }
+  else if (method === 'GET' && route === '/config/public') result = { app_name: settings['web.app_name'], app_icon: '', log_level: 'WARN', music_quality: {
+    netease: { default: settings['backend.netease_default_quality'], options: qualityOptions['backend.netease_default_quality'] },
+    qqmusic: { default: settings['backend.qqmusic_default_quality'], options: qualityOptions['backend.qqmusic_default_quality'] },
+  } }
   else if (method === 'GET' && route === '/voice/status') {
     const selected = queue.find(item => item.id === currentId)
     result = { state: selected ? playing ? 'playing' : 'paused' : 'idle', track_id: selected?.id,
