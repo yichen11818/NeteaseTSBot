@@ -547,7 +547,7 @@ B 站后台授权支持扫码登录或手动 Cookie，用于登录态接口和 A
 | [@yichen11818](https://github.com/yichen11818) | 项目发起与维护、核心功能开发、部署支持、文档和社区反馈处理。 |
 | [@BreadAira](https://github.com/BreadAira) | 修复网易云 Cookie 解析、B 站封面加载和 Docker 环境音频共享、Chromium 等问题（[PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9)、[Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)）。 |
 | [@Marius128](https://github.com/Marius128) | 贡献可选的 TeamSpeak 用户等级系统、B 站聊天点播，以及相应文档和测试（[PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)）。 |
-| [@nitonitori](https://github.com/nitonitori) | 贡献网易云风控时的自动音质回退、按 ID 直接导入歌单，以及相应文档和回归测试（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)，已合并）。 |
+| [@nitonitori](https://github.com/nitonitori) | 贡献网易云风控时的自动音质回退、按 ID 直接导入歌单、可配置的播放恢复与冷却、网易云与 QQ 音乐独立默认音质，以及后端 Playwright 镜像构建修复（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)、[#26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)、[#31](https://github.com/yichen11818/NeteaseTSBot/pull/31)，均已合并）。感谢同步完善文档与回归测试，并根据评审修复边界问题。 |
 
 ### 功能提案、问题反馈与验证
 
@@ -555,7 +555,6 @@ B 站后台授权支持扫码登录或手动 Cookie，用于登录态接口和 A
 | --- | --- |
 | [@yume2017cn](https://github.com/yume2017cn) | 提交随机播放、歌单选择、清空队列等聊天指令方案，并参与搜索显示与播放状态排查；相关聊天需求后续由维护者重新实现（[PR #10](https://github.com/yichen11818/NeteaseTSBot/pull/10)）。 |
 | [@Yz017](https://github.com/Yz017) | 提交项目梳理提案（[PR #12](https://github.com/yichen11818/NeteaseTSBot/pull/12)，未合并）。 |
-| [@nitonitori](https://github.com/nitonitori) | 提交自动续播重试和聊天默认音质的方案与测试（[PR #26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)，待评审）。 |
 | [@Ideenaster](https://github.com/Ideenaster) | 提供列表循环清空队列问题的详细复现、原因分析、修复建议和实际播放验证（[Issue #13](https://github.com/yichen11818/NeteaseTSBot/issues/13)）。 |
 | [@TICK077](https://github.com/TICK077) | 协助排查网易云与 QQ 音乐的部署、搜索和登录问题，并持续补充日志与接口结果（[Issue #11](https://github.com/yichen11818/NeteaseTSBot/issues/11)）。 |
 | [@screamingshark](https://github.com/screamingshark) | 反馈并验证 Docker 前后端通信问题，补充网易云会员播放与 API 使用情况（[Issue #4](https://github.com/yichen11818/NeteaseTSBot/issues/4)、[#7](https://github.com/yichen11818/NeteaseTSBot/issues/7)）。 |
