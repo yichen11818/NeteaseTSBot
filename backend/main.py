@@ -24,6 +24,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .bilibili_cache import prune_audio_cache
+from .bilibili_errors import BilibiliPlaybackError, bilibili_fallback_error, bilibili_playback_error
 from .diagnostics import run_diagnostics
 from .bilibili_auth import (
     close_all_bilibili_qr_sessions,
@@ -1634,19 +1635,19 @@ def _request_bilibili_api_sync(
             resp = client.get(f"https://api.bilibili.com{path}", params=params)
             resp.raise_for_status()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"bilibili api request failed: path={path} error={exc}") from exc
+        raise bilibili_playback_error(exc, detail=f"bilibili api request failed: path={path}") from exc
 
     try:
         payload = resp.json()
     except ValueError as exc:
-        raise HTTPException(status_code=502, detail=f"bilibili api returned invalid json: path={path}") from exc
+        raise BilibiliPlaybackError(detail=f"bilibili api returned invalid json: path={path}") from exc
 
     if int(payload.get("code") or 0) != 0:
-        raise HTTPException(status_code=502, detail=f"bilibili api failed: path={path} code={payload.get('code')}")
+        raise BilibiliPlaybackError(detail=f"bilibili api failed: path={path} code={payload.get('code')}")
 
     data = payload.get("data")
     if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail=f"bilibili api returned invalid data: path={path}")
+        raise BilibiliPlaybackError(detail=f"bilibili api returned invalid data: path={path}")
     return data
 
 
@@ -2127,7 +2128,7 @@ def _extract_bilibili_playurl_download_target(playurl_data: dict) -> tuple[str, 
             if backup:
                 return backup, ".mp4"
 
-    raise HTTPException(status_code=502, detail="bilibili playurl returned no downloadable media url")
+    raise BilibiliPlaybackError(detail="bilibili playurl returned no downloadable media url")
 
 
 async def _bilibili_search_videos(*, keywords: str, limit: int = 20, page: int = 1) -> dict:
@@ -2272,13 +2273,16 @@ def _extract_bilibili_video_info_sync(video_id: str) -> dict:
         "noplaylist": True,
         "http_headers": _BILIBILI_DEFAULT_HEADERS,
     }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        raise bilibili_fallback_error(api_error, exc) from exc
     normalized = _normalize_bilibili_video_info(info, fallback_video_id=normalized_video_id)
     if normalized is None:
         if api_error is not None:
-            raise RuntimeError(f"failed to parse bilibili metadata via api ({api_error}) and yt-dlp fallback")
-        raise RuntimeError("failed to parse bilibili metadata")
+            raise BilibiliPlaybackError(detail="failed to parse bilibili metadata via api and yt-dlp fallback")
+        raise BilibiliPlaybackError(detail="failed to parse bilibili metadata")
     return normalized
 
 
@@ -2292,10 +2296,10 @@ async def _extract_bilibili_video_info(video_id: str) -> dict:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"failed to resolve bilibili video: {exc}") from exc
+        raise bilibili_playback_error(exc, detail="failed to resolve bilibili video") from exc
 
     if not isinstance(normalized, dict):
-        raise HTTPException(status_code=502, detail="failed to parse bilibili video metadata")
+        raise BilibiliPlaybackError(detail="failed to parse bilibili video metadata")
     return normalized
 
 
@@ -2312,7 +2316,7 @@ def _download_bilibili_audio_sync(video_id: str) -> tuple[str, dict | None]:
         metadata = _normalize_bilibili_view_data(view_data, fallback_video_id=normalized_video_id)
         cid = _resolve_bilibili_primary_cid(view_data)
         if cid is None:
-            raise HTTPException(status_code=502, detail="bilibili view api returned no cid")
+            raise BilibiliPlaybackError(detail="bilibili view api returned no cid")
 
         playurl_data = _fetch_bilibili_playurl_sync(normalized_video_id, cid, dash=True)
         download_url, suffix = _extract_bilibili_playurl_download_target(playurl_data)
@@ -2352,9 +2356,7 @@ def _download_bilibili_audio_sync(video_id: str) -> tuple[str, dict | None]:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
     except Exception as exc:
-        if api_error is not None:
-            raise RuntimeError(f"bilibili api download failed ({api_error}); yt-dlp fallback failed ({exc})") from exc
-        raise
+        raise bilibili_fallback_error(api_error, exc) from exc
 
     filepath = _find_cached_bilibili_audio(normalized_video_id)
     normalized = _normalize_bilibili_video_info(info, fallback_video_id=normalized_video_id)
@@ -2377,10 +2379,10 @@ async def _download_bilibili_audio(video_id: str) -> tuple[str, dict | None]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"failed to download bilibili audio: {exc}") from exc
+            raise bilibili_playback_error(exc, detail="failed to download bilibili audio") from exc
 
         if not filepath:
-            raise HTTPException(status_code=502, detail="failed to locate downloaded bilibili audio")
+            raise BilibiliPlaybackError(detail="failed to locate downloaded bilibili audio")
         return filepath, metadata
 
 
@@ -4398,6 +4400,8 @@ async def _auto_play_continuation_attempt(
 
 
 def _playback_recovery_reason(exc: Exception | None) -> str | None:
+    if isinstance(exc, BilibiliPlaybackError):
+        return exc.recovery_reason
     if isinstance(exc, httpx.TimeoutException):
         return "network_timeout"
     if isinstance(exc, (httpx.UnsupportedProtocol, httpx.LocalProtocolError)):
@@ -4438,10 +4442,18 @@ async def _continue_auto_play(
         recovery.failed_item_id = preferred_item_id
     try:
         if initial_failure is None:
-            if await _auto_play_continuation_attempt(item_id, repeat_finished=repeat_finished, recovery=recovery):
+            if preferred_item_id is not None and report_initial_error:
+                # Explicit selection must report its own first failure. Automatic
+                # traversal may remove unavailable entries and choose another.
+                recovery.failed_item_id = preferred_item_id
+                if not await _play_queue_item_internal(preferred_item_id, requested_by=requested_by):
+                    raise HTTPException(status_code=404, detail="queue item not found")
                 return
-            if recovery.superseded or not recovery.excluded_ids:
-                return
+            else:
+                if await _auto_play_continuation_attempt(item_id, repeat_finished=repeat_finished, recovery=recovery):
+                    return
+                if recovery.superseded or not recovery.excluded_ids:
+                    return
     except (HTTPException, httpx.HTTPError) as exc:
         if not _is_transient_playback_error(exc):
             raise

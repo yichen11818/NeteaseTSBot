@@ -6,12 +6,14 @@ from collections import Counter
 from contextlib import ExitStack
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 from fastapi import HTTPException
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
+from yt_dlp.utils import DownloadError, ExtractorError
+from yt_dlp.networking.exceptions import HTTPError as YTDLPHTTPError
 
 from backend import main
 from backend.db import Base
@@ -104,6 +106,145 @@ class AutoPlayRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(20, main._current_queue_item_id)
         self.assertEqual([20, 30], self.queued())
         self.assertEqual(2, self.calls['20'])
+
+    async def test_manual_selection_reports_permanent_error_without_replacing_playing_track(self):
+        original = self.resolver.side_effect
+        for status in [402, 403, 404, 410]:
+            with self.subTest(status=status):
+                async def resolve(**kwargs):
+                    if kwargs['song_id'] == '20':
+                        raise HTTPException(status, 'selected track unavailable')
+                    return await original(**kwargs)
+
+                self.resolver.side_effect = resolve
+                await main._play_queue_item_internal(10, requested_by='test')
+                with self.sessions() as session, self.assertRaises(HTTPException) as error:
+                    await main.play_queue_item(20, session=session)
+                self.assertEqual(status, error.exception.status_code)
+                self.assertEqual(10, main._current_queue_item_id)
+                self.assertEqual([10, 20, 30], self.queued())
+                self.assertEqual(0, self.calls['30'])
+                self.assertIsNone(main._auto_play_retry_task)
+
+    async def test_bilibili_permission_failure_through_both_resolvers_does_not_retry(self):
+        self.hold_retry = True
+        real_client = httpx.Client
+        transport = httpx.MockTransport(lambda request: httpx.Response(403, request=request))
+        fallback_error = ExtractorError('Video unavailable', expected=True)
+        fallback = MagicMock()
+        fallback.YoutubeDL.return_value.__enter__.return_value.extract_info.side_effect = DownloadError(
+            'Video unavailable', exc_info=(type(fallback_error), fallback_error, None))
+        with tempfile.TemporaryDirectory() as directory, patch.object(main, 'BILIBILI_AUDIO_DIR', Path(directory)), patch.object(
+            main.httpx, 'Client', side_effect=lambda **kwargs: real_client(transport=transport, **kwargs)), patch.object(
+            main, '_get_yt_dlp_module', return_value=fallback), patch.object(main.settings, 'playback_exhausted_action', 'WAIT'):
+            with self.assertRaises(HTTPException):
+                await main.add_queue_bilibili(main.AddBilibiliQueueRequest(video_id='BV1xx411c7mD', title='Video',
+                    artist='Artist', album='Album', duration_ms=180000, cover_url='cover', play_now=True))
+        self.assertIsNone(main._auto_play_retry_task)
+        self.assertEqual([10, 20, 30], self.queued())
+        self.play.assert_not_awaited()
+
+    async def test_bilibili_transient_fallback_failure_recovers_through_real_download_chain(self):
+        real_client = httpx.Client
+        views = 0
+
+        def respond(request):
+            nonlocal views
+            if request.url.path == '/x/web-interface/wbi/view':
+                views += 1
+                if views == 1:
+                    return httpx.Response(503, request=request)
+                return httpx.Response(200, request=request, json={'code': 0, 'data': {
+                    'bvid': 'BV1xx411c7mD', 'cid': 123, 'title': 'Video', 'duration': 180,
+                    'owner': {'name': 'Artist'}, 'tname': 'Album', 'pic': 'cover'}})
+            if request.url.path == '/x/player/playurl':
+                return httpx.Response(200, request=request, json={'code': 0, 'data': {
+                    'dash': {'audio': [{'baseUrl': 'https://audio.example.test/song.m4s'}]}}})
+            return httpx.Response(200, request=request, content=b'fixture audio')
+
+        transport = httpx.MockTransport(respond)
+        upstream_error = YTDLPHTTPError(SimpleNamespace(status=503, reason='Service Unavailable'))
+        extractor_error = ExtractorError('Upstream unavailable', cause=upstream_error)
+        fallback = MagicMock()
+        fallback.YoutubeDL.return_value.__enter__.return_value.extract_info.side_effect = DownloadError(
+            'Upstream unavailable', exc_info=(type(extractor_error), extractor_error, None))
+        with tempfile.TemporaryDirectory() as directory, patch.object(main, 'BILIBILI_AUDIO_DIR', Path(directory)), patch.object(
+            main.httpx, 'Client', side_effect=lambda **kwargs: real_client(transport=transport, **kwargs)), patch.object(
+            main, '_get_yt_dlp_module', return_value=fallback):
+            with self.assertRaises(HTTPException) as error:
+                await main.add_queue_bilibili(main.AddBilibiliQueueRequest(video_id='BV1xx411c7mD', title='Video',
+                    artist='Artist', album='Album', duration_ms=180000, cover_url='cover', play_now=True))
+            self.assertEqual(503, error.exception.status_code)
+            await self.wait_retry()
+            self.assertTrue(Path(self.play.await_args.kwargs['source_url']).is_file())
+        self.assertEqual(31, main._current_queue_item_id)
+        self.assertEqual([15], self.delays)
+        self.play.assert_awaited_once()
+
+    async def test_natural_completion_still_skips_permanently_unavailable_tracks(self):
+        original = self.resolver.side_effect
+
+        async def resolve(**kwargs):
+            if kwargs['song_id'] == '20':
+                raise HTTPException(403, 'permission denied')
+            return await original(**kwargs)
+
+        self.resolver.side_effect = resolve
+        await main._play_queue_item_internal(10, requested_by='test')
+        await main._handle_playback_finished('stream:10')
+        self.assertEqual(30, main._current_queue_item_id)
+        self.assertEqual([30], self.queued())
+        self.assertIsNone(main._auto_play_retry_task)
+
+    async def test_bilibili_failure_categories_survive_metadata_and_download_wrappers(self):
+        real_client = httpx.Client
+        expected = ExtractorError('Video unavailable', expected=True)
+        cases = [
+            ('business restriction', 200, {'code': -101}, expected, None),
+            ('malformed response', 200, None, TypeError('invalid extractor response'), None),
+            ('fallback restriction after API outage', 503, None, expected, None),
+            ('permission followed by timeout', 403, None, TimeoutError('temporary'), None),
+            ('invalid protocol', httpx.UnsupportedProtocol('invalid URL'), None, httpx.UnsupportedProtocol('invalid URL'), None),
+            ('rate limited', 429, None, YTDLPHTTPError(SimpleNamespace(status=429, reason='Too Many Requests')), 'rate_limited'),
+            ('network timeout', httpx.ReadTimeout('temporary'), None, TimeoutError('temporary'), 'network_timeout'),
+        ]
+        for label, status, payload, cause, reason in cases:
+            for complete_metadata in [False, True]:
+                with self.subTest(case=label, complete_metadata=complete_metadata):
+                    self.hold_retry = True
+
+                    def respond(request):
+                        if isinstance(status, Exception):
+                            raise status
+                        return httpx.Response(status, request=request, **({'json': payload} if payload is not None else {'content': b'invalid json'}))
+
+                    wrapped = cause if isinstance(cause, ExtractorError) else ExtractorError('Fallback failed', cause=cause)
+                    fallback = MagicMock()
+                    fallback.YoutubeDL.return_value.__enter__.return_value.extract_info.side_effect = DownloadError(
+                        'Fallback failed', exc_info=(type(wrapped), wrapped, None))
+                    transport = httpx.MockTransport(respond)
+                    fields = dict(artist='Artist', album='Album', duration_ms=180000, cover_url='cover') if complete_metadata else {}
+                    with tempfile.TemporaryDirectory() as directory, patch.object(main, 'BILIBILI_AUDIO_DIR', Path(directory)), patch.object(
+                        main.httpx, 'Client', side_effect=lambda **kwargs: real_client(transport=transport, **kwargs)), patch.object(
+                        main, '_get_yt_dlp_module', return_value=fallback):
+                        with self.assertRaises(HTTPException):
+                            await main.add_queue_bilibili(main.AddBilibiliQueueRequest(video_id='BV1xx411c7mD', title='Video', play_now=True, **fields))
+                        await asyncio.sleep(0)
+                        try:
+                            if reason is None:
+                                self.assertIsNone(main._auto_play_retry_task)
+                                self.assertEqual([10, 20, 30], self.queued())
+                            else:
+                                status_payload = await main.voice_status()
+                                self.assertTrue(status_payload['recovery']['pending'])
+                                self.assertEqual(reason, status_payload['recovery']['last_reason'])
+                                self.assertEqual([10, 20, 30, 31], self.queued())
+                        finally:
+                            await self.cancel_retry()
+                            with self.sessions() as session:
+                                for item_id in self.queued():
+                                    if item_id > 30:
+                                        main.delete_queue_item(item_id, session=session)
 
     async def test_repeat_one_retries_the_same_track(self):
         main._repeat_mode = 'one'
