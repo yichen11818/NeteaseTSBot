@@ -37,11 +37,11 @@ class RecoverySettingsTests(unittest.TestCase):
         retry = fields['backend.playback_retry_count']
         self.assertEqual((3, 0, 10, 'recovery', 'none'), (
             retry['value'], retry['minimum'], retry['maximum'], retry['group'], retry['restart']))
-        original = Path(settings.voice_config_file).read_text()
+        original = Path(settings.voice_config_file).read_text(encoding="utf-8")
         effects = update_settings(self.session, {'backend.playback_retry_count': 1})
         self.assertEqual({'none'}, effects)
         self.assertEqual(1, settings.playback_retry_count)
-        self.assertEqual(original, Path(settings.voice_config_file).read_text())
+        self.assertEqual(original, Path(settings.voice_config_file).read_text(encoding="utf-8"))
 
     def test_invalid_policy_update_is_atomic_and_rejects_fractional_or_boolean_counts(self):
         for invalid in [1.5, True, '2.0', -1, 11]:
