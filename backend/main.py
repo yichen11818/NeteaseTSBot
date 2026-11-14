@@ -6044,12 +6044,11 @@ async def admin_qqmusic_qr_confirm(
     _require_admin_token(request)
     r = await qqmusic.confirm_qr_login(req.auth_url)
     c = (qqmusic.get_cookie() or "").strip()
-    print(f"[DEBUG] QR confirm - new cookie length: {len(c)}, preview: {c[:200]}...")
     if c:
         _set_secret(session, "qqmusic_cookie", c)
-        print(f"[DEBUG] QR confirm - cookie saved to database")
+        logger.info("QQ Music QR login cookie saved")
     else:
-        print(f"[DEBUG] QR confirm - no cookie to save")
+        logger.warning("QQ Music QR confirmation returned no cookie")
     return {"ok": True, "admin_cookie_set": bool(c), "uin": qqmusic.get_uin(), "raw": r}
 
 
