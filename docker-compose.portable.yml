@@ -4,8 +4,6 @@ services:
     pull_policy: never
     env_file:
       - tsbot.env
-    ports:
-      - "50051:50051"
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data

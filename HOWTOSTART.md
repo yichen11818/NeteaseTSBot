@@ -191,6 +191,8 @@ npm.cmd --prefix web run dev
 
 ## Docker 运行
 
+此节是仓库默认部署网络的现行运维入口，配置核验日期：2026-11-14。核验范围为仓库 Compose、启动脚本及配置示例；未核验远程测试、生产或灾备主机，也未修改任何已运行容器。源码开发的三个进程默认通过本机回环地址通信；Docker 中的后端通过 `voice-service:50051` 访问语音服务。
+
 项目根目录已提供：
 
 - `docker-compose.yml`
@@ -229,9 +231,18 @@ docker compose down
 
 默认端口映射：
 
-- `50051:50051`（voice-service gRPC）
 - `8009:8009`（backend）
 - `8080:8080`（web，Nginx 托管生产前端产物，并将 `/api/*` 反向代理到 backend）
+
+语音服务的 gRPC 没有应用层认证，因此三个默认 Compose 文件均不发布其宿主机端口。容器内仍监听 `50051`，不影响后端播放控制。升级后重新执行所用 Compose 的 `up -d` 才会移除旧容器的端口映射；只更新文件不会改变正在运行的服务。
+
+本地开发需要从宿主机调试容器内 gRPC 时，可显式加入调试配置（仅绑定 `127.0.0.1`）：
+
+```bash
+docker compose -f docker-compose.prebuilt.yml -f docker-compose.voice-debug.yml up -d
+```
+
+源码构建使用 `docker-compose.yml` 替换上面的首个文件；离线镜像使用 `docker-compose.portable.yml`。结束调试后不带调试文件重新执行 `up -d`。跨主机部署不属于默认拓扑；不要直接把未认证的 gRPC 发布到公网。
 
 ### 5. 使用预构建镜像（Docker Hub / GHCR）
 

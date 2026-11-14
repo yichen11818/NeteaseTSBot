@@ -329,7 +329,7 @@ docker compose down
 
 Compose starts 3 services by default:
 
-- `voice-service` (`50051`)
+- `voice-service` (`50051` inside the container network only; see [local debugging](HOWTOSTART.md#docker-运行))
 - `backend` (`8009`)
 - `web` (`8080`, Nginx serves the production frontend bundle and reverse-proxies `/api/*` to backend)
 

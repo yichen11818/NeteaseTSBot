@@ -1,0 +1,5 @@
+# Explicit host-only debugging; pair with one of the base Compose files.
+services:
+  voice-service:
+    ports:
+      - "127.0.0.1:50051:50051"

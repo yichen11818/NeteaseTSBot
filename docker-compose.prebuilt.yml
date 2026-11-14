@@ -3,8 +3,6 @@ services:
     image: ${TSBOT_IMAGE_REGISTRY:-docker.io}/${TSBOT_IMAGE_NAMESPACE:-yumi118}/${TSBOT_IMAGE_REPO:-neteasetsbot}-voice-service:${TSBOT_IMAGE_TAG:-latest}
     env_file:
       - tsbot.env
-    ports:
-      - "50051:50051"
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data

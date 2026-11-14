@@ -382,7 +382,7 @@ docker compose down
 
 Compose 默认会启动 3 个服务：
 
-- `voice-service`（50051）
+- `voice-service`（仅容器网络内的 `50051`，不映射宿主机；调试方式见 [运行指南](HOWTOSTART.md#docker-运行)）
 - `backend`（8009）
 - `web`（8080，Nginx 托管生产前端产物，并将 `/api/*` 反向代理到 backend）
 
