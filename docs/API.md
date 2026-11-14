@@ -861,6 +861,8 @@ curl -X POST "http://127.0.0.1:8009/external/queue" \
 
 ### 10.2 登录与用户态接口
 
+`/qqmusic/login/*` 均要求已改密的管理员会话；POST 请求还必须携带 `X-CSRF-Token`。外部 API Token 不能代替管理员登录。状态接口只返回登录状态和 UIN，不返回 Cookie。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/qqmusic/login/qr/key` | 获取 QQ 音乐登录二维码 |

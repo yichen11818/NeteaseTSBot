@@ -62,6 +62,7 @@ from .managed_assets import ASSET_BY_KEY, asset_path, asset_payload, delete_asse
 from .netease import NeteaseClient
 from .netease_cookie import extract_netease_auth_cookie, has_netease_auth_cookie
 from .qqmusic import QQMusicClient
+from .qqmusic_login import QQMusicCookieSetRequest, create_qqmusic_login_router
 from .voice_client import VoiceClient, VoiceStatus
 from .music_quality import NETEASE_QUALITIES
 from .queue_quality import QQMUSIC_QUALITIES, encode_qqmusic_source, qqmusic_queue_quality, strip_qqmusic_source
@@ -6010,33 +6011,6 @@ async def qqmusic_album_cover(album_mid: str) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# QQ Music Login endpoints
-
-@app.get("/qqmusic/login/qr/key")
-async def qqmusic_qr_key() -> dict:
-    """获取QQ音乐二维码登录密钥"""
-    try:
-        return await qqmusic.get_qr_key()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/qqmusic/login/qr/check")
-async def qqmusic_qr_check(qr_key: str, ptqrtoken: str, pt_login_sig: str = "") -> dict:
-    """检查QQ音乐二维码登录状态"""
-    try:
-        # Set the pt_login_sig in the client if provided
-        if pt_login_sig:
-            qqmusic._pt_login_sig = pt_login_sig
-        return await qqmusic.check_qr_status(qr_key, ptqrtoken)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class QQMusicCookieSetRequest(BaseModel):
-    cookie: str
-
-
 class QQMusicQRConfirmRequest(BaseModel):
     auth_url: str
 
@@ -6190,34 +6164,6 @@ async def admin_bilibili_qr_check(
     }
 
 
-@app.post("/qqmusic/login/cookie")
-async def qqmusic_set_cookie(req: QQMusicCookieSetRequest) -> dict:
-    """设置QQ音乐Cookie"""
-    try:
-        qqmusic.set_cookie(req.cookie)
-        return {"success": True, "message": "Cookie设置成功", "uin": qqmusic.get_uin()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/qqmusic/login/status")
-async def qqmusic_login_status() -> dict:
-    """获取QQ音乐登录状态"""
-    try:
-        if not qqmusic.get_cookie():
-            return {"logged_in": False, "message": "未设置Cookie"}
-        
-        refresh_result = await qqmusic.refresh_login()
-        return {
-            "logged_in": refresh_result["success"],
-            "message": refresh_result["message"],
-            "uin": qqmusic.get_uin(),
-            "cookie": qqmusic.get_cookie()
-        }
-    except Exception as e:
-        return {"logged_in": False, "message": str(e)}
-
-
 @app.get("/qqmusic/user/info")
 async def qqmusic_user_info() -> dict:
     """获取QQ音乐用户信息"""
@@ -6236,10 +6182,4 @@ async def qqmusic_user_playlists() -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/qqmusic/login/refresh")
-async def qqmusic_refresh_login() -> dict:
-    """刷新QQ音乐登录状态"""
-    try:
-        return await qqmusic.refresh_login()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+app.include_router(create_qqmusic_login_router(qqmusic, _require_admin_token))
