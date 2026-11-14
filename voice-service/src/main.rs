@@ -22,6 +22,8 @@ use tracing::{error, info, warn};
 
 mod logger;
 
+use voice_service::pcm_buffer::{PcmBuffer, PcmFrame};
+
 use tsclientlib::{Connection, DisconnectOptions, Identity, StreamItem, Version};
 use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, OutPacket, PacketType};
 use tsclientlib::{events, MessageTarget};
@@ -1565,8 +1567,7 @@ async fn playback_loop(
 
     // Encode/send loop must keep a stable 20ms cadence to prevent TS3 jitter buffer underruns.
     // We decouple ffmpeg reads from the send cadence via a small PCM frame queue.
-    let pcm_channel_capacity: usize = if cfg!(windows) { 200 } else { 50 };
-    let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(pcm_channel_capacity);
+    let (pcm_tx, mut pcm_buffer) = PcmBuffer::channel();
 
     let encoder = Encoder::new(
         audiopus::SampleRate::Hz48000,
@@ -1624,16 +1625,6 @@ async fn playback_loop(
     let mut underruns_consecutive: u64 = 0;
     let mut logged_first_pcm = false;
 
-    let mut pcm_buf: VecDeque<Vec<u8>> = VecDeque::new();
-
-    let prebuffer_target: usize = if cfg!(windows) { 15 } else { 5 };
-    let late_frame_wait = if cfg!(windows) {
-        Duration::from_millis(8)
-    } else {
-        Duration::from_millis(3)
-    };
-    let mut prebuffering = true;
-
     let mut last_tick = Instant::now();
     let mut reset_tick_after_pause = false;
     let mut tick_jitter_max_ms: u128 = 0;
@@ -1672,23 +1663,13 @@ async fn playback_loop(
             _ = ticker.tick() => {}
         }
 
-        while let Ok(frame) = pcm_rx.try_recv() {
-            if frame.len() == frame_bytes {
-                pcm_buf.push_back(frame);
-            }
-        }
-
         if !logged_first_pcm {
-            if !pcm_buf.is_empty() {
+            if pcm_buffer.has_audio() {
                 logged_first_pcm = true;
                 info!(source_url = %source_url, first_pcm_ms = %playback_started.elapsed().as_millis(), "first pcm frame received");
             } else if playback_started.elapsed() >= Duration::from_secs(5) {
                 return Err(anyhow!("no pcm received from ffmpeg"));
             }
-        }
-
-        if prebuffering {
-            prebuffering = pcm_buf.len() < prebuffer_target;
         }
 
         let now = Instant::now();
@@ -1701,29 +1682,20 @@ async fn playback_loop(
 
         // Prefer real PCM frame; fall back to silence to keep cadence stable.
         // Allow a tiny wait to reduce false underruns when the PCM frame arrives slightly after the tick.
-        let mut got_real_frame = false;
-        if !prebuffering {
-            if let Some(frame) = pcm_buf.pop_front() {
-                if frame.len() == frame_bytes {
-                    pcm.copy_from_slice(&frame);
-                    got_real_frame = true;
-                }
-            } else {
-                match tokio::time::timeout(late_frame_wait, pcm_rx.recv()).await {
-                    Ok(Some(frame)) => {
-                        if frame.len() == frame_bytes {
-                            pcm.copy_from_slice(&frame);
-                            got_real_frame = true;
-                        }
-                    }
-                    Ok(None) => {
-                        // ffmpeg finished / failed. Stop playback.
-                        break;
-                    }
-                    Err(_) => {}
-                }
+        let got_real_frame = match pcm_buffer.next_frame().await {
+            PcmFrame::Audio(frame) => {
+                logged_first_pcm = true;
+                pcm.copy_from_slice(&frame);
+                true
             }
-        }
+            PcmFrame::Pending => false,
+            PcmFrame::Finished => {
+                if !logged_first_pcm {
+                    return Err(anyhow!("no pcm received from ffmpeg"));
+                }
+                break;
+            }
+        };
 
         if got_real_frame {
             underruns_consecutive = 0;

@@ -426,3 +426,7 @@ server {
 - 查看 `TODO` 文件了解开发计划
 - 查看 `LICENSE` 文件了解许可证信息
 - 遇到问题请提交 Issue
+
+## 语音预缓冲
+
+解码后的 PCM 只保存在有界通道内，每个 20 ms 播放周期消费一帧；通道满时阻塞读取，背压经管道传回 FFmpeg，不丢弃音频帧。Linux 缓冲为 50 帧（约 1 秒、192 KB PCM），Windows 为 200 帧（约 4 秒、768 KB PCM），另有单帧和 FFmpeg 内部缓冲。容量定义位于 `voice-service/src/pcm_buffer.rs`，不限制歌曲时长。短于预缓冲目标的音频在 EOF 时照常排空。相关 Rust 单元测试由 PR 检查运行。
