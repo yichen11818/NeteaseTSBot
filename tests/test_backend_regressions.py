@@ -32,9 +32,9 @@ class BilibiliAudioCacheTests(unittest.TestCase):
 
             with (
                 patch.object(main, "BILIBILI_AUDIO_DIR", cache_dir),
-                patch.object(main, "BILIBILI_AUDIO_CACHE_TTL_SECONDS", 3600, create=True),
-                patch.object(main, "BILIBILI_AUDIO_CACHE_MAX_BYTES", 0, create=True),
-                patch.object(main, "BILIBILI_AUDIO_PARTIAL_TTL_SECONDS", 3600, create=True),
+                patch.object(main.settings, "bilibili_audio_cache_ttl_hours", 1),
+                patch.object(main.settings, "bilibili_audio_cache_max_mb", 0),
+                patch.object(main.settings, "bilibili_audio_partial_ttl_minutes", 60),
             ):
                 cached = main._find_cached_bilibili_audio("BVEXPIRED")
 
@@ -56,8 +56,8 @@ class BilibiliAudioCacheTests(unittest.TestCase):
 
             with (
                 patch.object(main, "BILIBILI_AUDIO_DIR", cache_dir),
-                patch.object(main, "BILIBILI_AUDIO_CACHE_TTL_SECONDS", 0, create=True),
-                patch.object(main, "BILIBILI_AUDIO_CACHE_MAX_BYTES", 1_000_000, create=True),
+                patch.object(main.settings, "bilibili_audio_cache_ttl_hours", 0),
+                patch.object(main.settings, "bilibili_audio_cache_max_mb", 1),
             ):
                 main._find_cached_bilibili_audio("BVMISSING")
 
@@ -78,8 +78,8 @@ class BilibiliAudioCacheTests(unittest.TestCase):
 
             with (
                 patch.object(main, "BILIBILI_AUDIO_DIR", cache_dir),
-                patch.object(main, "BILIBILI_AUDIO_CACHE_TTL_SECONDS", 0),
-                patch.object(main, "BILIBILI_AUDIO_CACHE_MAX_BYTES", 1_000_000),
+                patch.object(main.settings, "bilibili_audio_cache_ttl_hours", 0),
+                patch.object(main.settings, "bilibili_audio_cache_max_mb", 1),
             ):
                 cached = main._find_cached_bilibili_audio("BVREQUESTED")
 

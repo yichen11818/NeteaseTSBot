@@ -89,9 +89,9 @@ voice = VoiceClient()
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BILIBILI_AUDIO_DIR = REPO_ROOT / "tmp" / "bilibili_audio"
-BILIBILI_AUDIO_CACHE_TTL_SECONDS = max(0, settings.bilibili_audio_cache_ttl_hours) * 3600
-BILIBILI_AUDIO_CACHE_MAX_BYTES = max(0, settings.bilibili_audio_cache_max_mb) * 1024 * 1024
-BILIBILI_AUDIO_PARTIAL_TTL_SECONDS = max(0, settings.bilibili_audio_partial_ttl_minutes) * 60
+SECONDS_PER_HOUR = 3600
+SECONDS_PER_MINUTE = 60
+BYTES_PER_MIB = 1024 * 1024
 _BILIBILI_VIDEO_ID_RE = re.compile(r"(BV[0-9A-Za-z]+|av\d+)", re.IGNORECASE)
 _BILIBILI_TAG_RE = re.compile(r"<[^>]+>")
 _BILIBILI_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -2229,9 +2229,9 @@ def _find_cached_bilibili_audio(video_id: str) -> str:
     requested_paths = set(BILIBILI_AUDIO_DIR.glob(f"{video_id}.*"))
     prune_result = prune_audio_cache(
         BILIBILI_AUDIO_DIR,
-        max_bytes=BILIBILI_AUDIO_CACHE_MAX_BYTES,
-        ttl_seconds=BILIBILI_AUDIO_CACHE_TTL_SECONDS,
-        partial_ttl_seconds=BILIBILI_AUDIO_PARTIAL_TTL_SECONDS,
+        max_bytes=settings.bilibili_audio_cache_max_mb * BYTES_PER_MIB,
+        ttl_seconds=settings.bilibili_audio_cache_ttl_hours * SECONDS_PER_HOUR,
+        partial_ttl_seconds=settings.bilibili_audio_partial_ttl_minutes * SECONDS_PER_MINUTE,
         protected_paths=requested_paths,
     )
     if prune_result.removed_files:
@@ -4813,9 +4813,6 @@ async def admin_update_settings(
     request: Request,
     session: Session = Depends(get_session),
 ) -> dict:
-    global BILIBILI_AUDIO_CACHE_TTL_SECONDS, BILIBILI_AUDIO_CACHE_MAX_BYTES
-    global BILIBILI_AUDIO_PARTIAL_TTL_SECONDS
-
     _, admin_session = require_admin(request, session)
     require_csrf(request, admin_session)
     effects = update_settings(session, req.values, apply=req.apply)
@@ -4825,9 +4822,6 @@ async def admin_update_settings(
             if retry_task is not None:
                 await asyncio.gather(retry_task, return_exceptions=True)
         netease._base = settings.netease_api_base.rstrip("/")
-        BILIBILI_AUDIO_CACHE_TTL_SECONDS = max(0, settings.bilibili_audio_cache_ttl_hours) * 3600
-        BILIBILI_AUDIO_CACHE_MAX_BYTES = max(0, settings.bilibili_audio_cache_max_mb) * 1024 * 1024
-        BILIBILI_AUDIO_PARTIAL_TTL_SECONDS = max(0, settings.bilibili_audio_partial_ttl_minutes) * 60
         if "backend.voice_grpc_addr" in req.values:
             await voice.close()
         if "voice" in effects and any(key.startswith("voice.description_") for key in req.values):
