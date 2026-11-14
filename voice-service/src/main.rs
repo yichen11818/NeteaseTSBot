@@ -21,6 +21,10 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
 
 mod logger;
+mod playback;
+
+use playback::PlaybackRequest;
+use voice_service::playback_status::SharedStatus;
 
 use voice_service::pcm_buffer::{PcmBuffer, PcmFrame};
 
@@ -43,19 +47,6 @@ use voicev1::voice_service_server::{VoiceService, VoiceServiceServer};
 static DIRECT_DESCRIPTION_UPDATE_WARNED: AtomicBool = AtomicBool::new(false);
 static CONFIG_RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TEAMSPEAK_CONNECTED: AtomicBool = AtomicBool::new(false);
-
-#[derive(Default)]
-struct SharedStatus {
-    state: i32,
-    now_playing_title: String,
-    now_playing_source_url: String,
-    volume_percent: i32,
-    fx_pan: f32,
-    fx_width: f32,
-    fx_swap_lr: bool,
-    fx_bass_db: f32,
-    fx_reverb_mix: f32,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -311,7 +302,7 @@ impl VoiceService for VoiceServiceImpl {
         req: Request<voicev1::PlayRequest>,
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
         let r = req.into_inner();
-        self.start_playback_internal(r.title, r.source_url, r.notice, 0.0, false)
+        self.start_playback_internal(PlaybackRequest { title: r.title, source_url: r.source_url, notice: r.notice, start_time_s: 0.0, paused: false })
             .await?;
 
         Ok(Response::new(voicev1::CommandResponse {
@@ -469,7 +460,7 @@ impl VoiceService for VoiceServiceImpl {
             }
         };
 
-        self.start_playback_internal(title, source_url, String::new(), target_time_s, paused)
+        self.start_playback_internal(PlaybackRequest { title, source_url, notice: String::new(), start_time_s: target_time_s, paused })
             .await?;
 
         Ok(Response::new(voicev1::CommandResponse {
@@ -483,13 +474,6 @@ impl VoiceService for VoiceServiceImpl {
         _req: Request<voicev1::Empty>,
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
         self.stop_internal().await;
-
-        {
-            let mut st = self.status.lock().await;
-            st.state = 1; // STATE_IDLE
-            st.now_playing_title.clear();
-            st.now_playing_source_url.clear();
-        }
 
         // LogEvent.Level: INFO=2
         emit_log(&self.events_tx, 2, "stopped");
@@ -652,90 +636,6 @@ impl VoiceServiceImpl {
         Some((st.now_playing_title.clone(), source_url, paused))
     }
 
-    async fn start_playback_internal(
-        &self,
-        title: String,
-        source_url: String,
-        notice: String,
-        start_time_s: f64,
-        paused: bool,
-    ) -> std::result::Result<(), Status> {
-        if !notice.is_empty() {
-            let _ = self.ts3_notice_tx.try_send((2, notice));
-        }
-
-        self.stop_internal().await;
-
-        {
-            let mut st = self.status.lock().await;
-            st.now_playing_title = title.clone();
-            st.now_playing_source_url = source_url.clone();
-            st.state = if paused { 3 } else { 2 };
-        }
-
-        // PlaybackEvent.Type: STARTED=1
-        emit_playback(&self.events_tx, 1, title.clone(), source_url.clone(), "");
-
-        let (paused_tx, paused_rx) = watch::channel(paused);
-        let cancel = CancellationToken::new();
-
-        let status = self.status.clone();
-        let tx = self.ts3_audio_tx.clone();
-        let events_tx = self.events_tx.clone();
-        let title_for_event = title.clone();
-        let source_url_for_loop = source_url.clone();
-        let cancel_for_task = cancel.clone();
-
-        let handle = tokio::spawn(async move {
-            let r = playback_loop(
-                source_url_for_loop.clone(),
-                start_time_s,
-                tx,
-                paused_rx,
-                cancel_for_task.clone(),
-                status,
-            )
-            .await;
-            let was_cancelled = cancel_for_task.is_cancelled();
-            match r {
-                Ok(()) => {
-                    if !was_cancelled {
-                        // PlaybackEvent.Type: FINISHED=2
-                        emit_playback(&events_tx, 2, title_for_event, source_url_for_loop, "");
-                    }
-                }
-                Err(e) => {
-                    if was_cancelled {
-                        return;
-                    }
-                    error!(%e, "playback loop failed");
-                    // PlaybackEvent.Type: ERROR=3
-                    emit_playback(&events_tx, 3, title_for_event, source_url_for_loop, format!("{e}"));
-                }
-            }
-        });
-
-        let mut pb = self.playback.lock().await;
-        *pb = Some(PlaybackControl {
-            cancel,
-            paused_tx,
-            handle,
-        });
-        Ok(())
-    }
-
-    async fn stop_internal(&self) {
-        let mut pb = self.playback.lock().await;
-        if let Some(p) = pb.take() {
-            p.cancel.cancel();
-            let abort_handle = p.handle.abort_handle();
-            let join = p.handle;
-            let r = tokio::time::timeout(Duration::from_secs(2), join).await;
-            if r.is_err() {
-                abort_handle.abort();
-            }
-        }
-    }
 }
 
 fn get_env(key: &str, def: &str) -> String {
@@ -1944,17 +1844,7 @@ async fn main() -> Result<()> {
 
     let persist_file = resolve_repo_relative(&get_env("TSBOT_VOICE_STATE_FILE", "./logs/voice_state.json"));
 
-    let mut init_status = SharedStatus {
-        state: 1, // STATE_IDLE
-        now_playing_title: String::new(),
-        now_playing_source_url: String::new(),
-        volume_percent: 100,
-        fx_pan: 0.0,
-        fx_width: 1.0,
-        fx_swap_lr: false,
-        fx_bass_db: 0.0,
-        fx_reverb_mix: 0.0,
-    };
+    let mut init_status = SharedStatus::idle();
 
     if let Some(ps) = load_persisted_voice_state(&persist_file) {
         init_status.volume_percent = ps.volume_percent.clamp(0, 200);

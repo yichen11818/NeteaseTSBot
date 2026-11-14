@@ -61,4 +61,4 @@ jobs:
       # Use system Opus so audiopus_sys does not build its old bundled CMake project.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake pkg-config libopus-dev
       - run: cargo check --manifest-path voice-service/Cargo.toml
-      - run: cargo test --manifest-path voice-service/Cargo.toml --lib
+      - run: cargo test --manifest-path voice-service/Cargo.toml
