@@ -164,7 +164,7 @@ class VoiceClient:
         resp = await stub.GetAudioFx(self._pb2.Empty())
         return VoiceAudioFx(
             pan=float(getattr(resp, "pan", 0.0) or 0.0),
-            width=float(getattr(resp, "width", 1.0) or 1.0),
+            width=float(getattr(resp, "width", 1.0)),
             swap_lr=bool(getattr(resp, "swap_lr", False) or False),
             bass_db=float(getattr(resp, "bass_db", 0.0) or 0.0),
             reverb_mix=float(getattr(resp, "reverb_mix", 0.0) or 0.0),
