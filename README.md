@@ -10,6 +10,8 @@
 
 **NeteaseTSBot** 支持 **TeamSpeak 3 / 6**，提供播放队列、歌词和 Docker 预构建镜像，可自行部署。
 
+**v1.0.0 重大更新：** 一个项目连接多个服务器，独立播放并在 Web 中切换；同时汇总播放恢复、分平台音质、TS6 等级及安全修复。[完整更新与关联 Issue](docs/releases/v1.0.0.md)。
+
 [快速部署](#先把机器人跑起来) · [聊天指令](#teamspeak-聊天指令) · [API 文档](docs/API.md) · [参与贡献](CONTRIBUTING.md) · [反馈问题](https://github.com/yichen11818/NeteaseTSBot/issues/new/choose)
 
 **[在线体验 →](https://yichen11818.github.io/NeteaseTSBot/)** 无需安装即可体验模拟搜索、队列和歌词；不播放真实音频。[演示部署说明](docs/DEMO.md)
@@ -418,7 +420,7 @@ docker compose -f docker-compose.prebuilt.yml up -d
 
 - GitHub 的 **Packages** 页面只显示 GHCR 包；如果只推 Docker Hub，这里会是空的。
 - 现在会看到 **3 个镜像仓库**，这是正常现象，因为项目按 `backend` / `web` / `voice-service` 三个服务分别构建与发布。
-- GitHub 的 **Releases** 页面会额外附带 `tsbot-<version>-linux-amd64.tar.gz` 和 `SHA256SUMS.txt`，那是软件包，不是容器镜像。
+- GitHub 的 **Releases** 页面会额外附带 `tsbot-<version>-linux-amd64.tar.gz` 和 `SHA256SUMS.txt`，那是软件包，不是容器镜像。自 v1.0.0 起包含完整跟踪源码、多服务器部署工具、预编译 Voice 二进制与 Web 产物；使用方法见运行指南。
 
 ## 默认端口
 

@@ -10,6 +10,8 @@ Listen together in your TeamSpeak channel. Search and queue **Netease Cloud Musi
 
 **NeteaseTSBot** supports **TeamSpeak 3 / 6**, with playback queues, lyrics, and prebuilt Docker images for self-hosting.
 
+**v1.0.0 major update:** independent multi-server playback from one project and Web console, plus playback recovery, per-provider quality, TS6 levels and security fixes. [Full release notes and linked issues](docs/releases/v1.0.0.md).
+
 **Multiple servers, one project:** one Web console can manage independent TeamSpeak bots, each with its own queue, volume, channel, music accounts, administrator and persistent data. Copy `servers.example.json` to `servers.json`, run `python scripts/multi_server.py --init-env`, then build and start the generated Compose project from source. Use the Web server selector to switch bots. See the [operations guide](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器) for setup, migration and verification scope. The existing startup scripts remain single-server entry points.
 
 [Get started](#start-with-prebuilt-docker-images) · [API reference](docs/API.md) · [Contribute](CONTRIBUTING.md) · [Report an issue](https://github.com/yichen11818/NeteaseTSBot/issues/new/choose) · [中文](README.md)
@@ -365,7 +367,7 @@ Notes:
 
 - GitHub **Packages** only shows GHCR packages, so it stays empty if you only push to Docker Hub.
 - Seeing **3 image repositories** is expected because the project publishes `backend`, `web`, and `voice-service` separately.
-- GitHub **Releases** also includes `tsbot-<version>-linux-amd64.tar.gz` and `SHA256SUMS.txt`; those are downloadable bundles, not container images.
+- GitHub **Releases** also includes `tsbot-<version>-linux-amd64.tar.gz` and `SHA256SUMS.txt`; those are downloadable bundles, not container images. From v1.0.0, bundles include all tracked sources, multi-server deployment tools, the compiled Voice binary and Web assets. See the operations guide for usage.
 
 ## Default Ports
 

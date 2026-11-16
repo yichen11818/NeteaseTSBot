@@ -266,6 +266,7 @@ docker compose -f docker-compose.prebuilt.yml up -d
 - GitHub **Packages** 页面显示的是 GHCR 包；如果只推 Docker Hub，这里会是空的。
 - 现在看到 `backend` / `web` / `voice-service` 三个镜像仓库是正常的，因为当前发布策略就是按三个服务分别构建。
 - GitHub **Releases** 页面里的 `tar.gz` 与 `SHA256SUMS.txt` 是软件包归档，不是 Docker 镜像。
+- 自 v1.0.0 起，Linux amd64 发布包包含完整的 Git 跟踪源码、Dockerfiles、`scripts/`、`servers.example.json` 与文档，以及 `bin/voice-service` 和 `web/dist/` 构建产物。解压后可使用下方的多服务器生成命令；多服务器 Compose 仍从包内源码构建镜像。原有启动脚本仍采用源码构建流程，若使用附带的 Voice 二进制，应在包根目录、加载原 `tsbot.env` 后显式运行 `./bin/voice-service 127.0.0.1:50051`。构建产物不包含个人环境文件、数据库或实例数据。
 
 ## 一个项目连接多个 TeamSpeak 服务器
 

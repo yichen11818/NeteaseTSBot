@@ -60,6 +60,14 @@ backend/.venv/bin/python -m playwright install chromium
 
 只修改前端时可使用[离线演示构建](docs/DEMO.md)，无需真实服务器或平台账号。PR 会自动运行后端回归、前端测试及类型检查、两种前端构建和 Voice 协议检查。 / The offline demo build lets you develop UI without a real server or platform account. Pull requests run regression tests, frontend tests and type checks, both web builds, and a Voice protocol check.
 
+## 发布版本 / Publishing a release
+
+发布说明保存在 `docs/releases/<tag>.md`（例如 `v1.0.0.md`），汇总上一版本以来的改动、关联 Issue、升级方法和实际验证范围。未实现的 Issue 子需求必须单独注明。推送版本标签前先确认同一提交的自动检查通过。
+
+`v*` 标签触发三个服务镜像及 Linux amd64 安装包构建；两者成功后发布任务上传安装包和校验文件，并使用对应文件中的发布说明。安装包通过 `git archive` 包含全部跟踪源码，再加入 Voice 二进制和 Web 产物，因此不得把环境文件、数据库或实例数据加入 Git。
+
+Store release notes in `docs/releases/<tag>.md`, including linked issues, upgrade instructions and the actual validation scope. Verify checks for the exact commit before pushing its version tag. Release publication waits for all three service images and the Linux bundle; the bundle contains tracked sources plus compiled assets.
+
 ## 提交 PR / Submitting a PR
 
 - 一次解决一个问题；解释修改前后的行为，并关联对应 Issue（如有）。 / Keep one problem per PR; describe the before/after behavior and link an issue if applicable.
