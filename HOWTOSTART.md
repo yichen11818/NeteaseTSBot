@@ -332,7 +332,7 @@ docker compose -f docker-compose.multi.json logs --tail=100 backend-home voice-h
 
 本地原有单服务器如果占用 `8080`，应先停止它或修改多服务器的 `web_port`。外层反向代理应把整个站点交给多服务器 Web 网关，不再把 `/api` 单独转发到旧的 `8009`。
 
-2026-11-17 本地验证覆盖生成器测试、前后端回归与构建，以及两个实际 FastAPI 进程经本机 Nginx 的队列、配置、登录/退出、Cookie 路径和 CSRF 隔离；Playwright 验证了服务器切换、登录和手机布局。本机 Nginx 为 1.21，验收时使用回环地址替换 Docker 上游并去掉新版动态 DNS 指令；仓库的 CI 部署检查使用镜像对应的 Nginx 1.30.2 验证生成配置。本机没有 Docker，未执行 Docker Compose 配置检查、容器启动或真实 TeamSpeak 播放；新增 CI 检查也尚未在远端运行。
+2026-11-17 本地验证覆盖生成器测试、前后端回归与构建，以及两个实际 FastAPI 进程经本机 Nginx 的队列、配置、登录/退出、Cookie 路径和 CSRF 隔离；Playwright 验证了服务器切换、登录和手机布局。本机 Nginx 为 1.21，验收时使用回环地址替换 Docker 上游并去掉新版动态 DNS 指令。本机没有 Docker；多服务器 Compose 配置及镜像对应的 Nginx 1.30.2 配置检查已在 [GitHub Actions](https://github.com/yichen11818/NeteaseTSBot/actions/runs/43911443404) 通过。尚未验收整套多服务器容器启动或真实 TeamSpeak 播放，配置检查通过不代表这些运行链路已经验证。
 
 ## 启动配置与 Web 系统配置
 
