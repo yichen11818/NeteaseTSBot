@@ -1,4 +1,6 @@
-export const QQMUSIC_QUALITY_STORAGE_KEY = 'tsbot:qqmusic:quality'
+import { serverStorageKey } from '../servers'
+
+export const QQMUSIC_QUALITY_STORAGE_KEY = serverStorageKey('tsbot:qqmusic:quality')
 export const QQMUSIC_QUALITY_OPTIONS = [
   { value: 'server', label: '跟随服务器' },
   { value: 'm4a', label: 'M4A' },

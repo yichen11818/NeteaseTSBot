@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import MusicPlayer from './components/MusicPlayer.vue'
+import ServerSelector from './components/ServerSelector.vue'
+import { currentServerId, type ServerEntry } from './servers'
 import { appConfig } from './appConfig'
 import { applyTheme, getInitialTheme } from './theme'
 import { DEMO_MODE } from './demoMode'
@@ -21,6 +23,8 @@ import {
   X
 } from 'lucide-vue-next'
 
+defineProps<{ servers: readonly ServerEntry[] }>()
+const selectedServer = currentServerId()
 const sidebarOpen = ref(false)
 const desktopQuery = window.matchMedia('(min-width: 1024px)')
 const isDesktop = ref(desktopQuery.matches)
@@ -48,6 +52,9 @@ function toggleTheme() {
 
 <template>
   <div :class="['app-shell min-h-screen transition-colors duration-300', isLyricsRoute ? 'bg-black h-[100dvh] overflow-hidden' : 'bg-gray-50']">
+    <div v-if="(isAuthRoute || isLyricsRoute) && servers.length" class="fixed left-4 top-3 z-50 rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
+      <ServerSelector :servers="servers" :selected="selectedServer" />
+    </div>
     <RouterView v-if="isAuthRoute" />
     <template v-if="isLyricsRoute">
       <div v-if="DEMO_MODE" class="pointer-events-none fixed top-3 right-4 z-50 rounded-full bg-black/50 px-3 py-1 text-xs text-white">在线体验 · 不播放真实音频</div>
@@ -188,6 +195,7 @@ function toggleTheme() {
             >
               <Menu :size="20" />
             </button>
+            <ServerSelector :servers="servers" :selected="selectedServer" />
           </div>
           
           <div class="flex items-center gap-2">

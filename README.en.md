@@ -10,6 +10,8 @@ Listen together in your TeamSpeak channel. Search and queue **Netease Cloud Musi
 
 **NeteaseTSBot** supports **TeamSpeak 3 / 6**, with playback queues, lyrics, and prebuilt Docker images for self-hosting.
 
+**Multiple servers, one project:** one Web console can manage independent TeamSpeak bots, each with its own queue, volume, channel, music accounts, administrator and persistent data. Copy `servers.example.json` to `servers.json`, run `python scripts/multi_server.py --init-env`, then build and start the generated Compose project from source. Use the Web server selector to switch bots. See the [operations guide](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器) for setup, migration and verification scope. The existing startup scripts remain single-server entry points.
+
 [Get started](#start-with-prebuilt-docker-images) · [API reference](docs/API.md) · [Contribute](CONTRIBUTING.md) · [Report an issue](https://github.com/yichen11818/NeteaseTSBot/issues/new/choose) · [中文](README.md)
 
 **[Try the live demo →](https://yichen11818.github.io/NeteaseTSBot/)** Explore simulated search, queues, and lyrics without installing anything. The demo does not play real audio. [Demo deployment guide](docs/DEMO.md).

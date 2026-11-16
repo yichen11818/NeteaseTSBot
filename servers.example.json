@@ -1,0 +1,7 @@
+{
+  "web_port": 8080,
+  "servers": [
+    { "id": "home", "name": "主服务器" },
+    { "id": "friends", "name": "朋友的服务器" }
+  ]
+}

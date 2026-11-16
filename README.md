@@ -100,6 +100,8 @@ TSBot 的目标是把边界重新划清：
 - **voice-service/**: Rust 语音服务（连接 TeamSpeak、播放音频，提供 gRPC 给后端调用）
 - **web/**: Vue3 + Vite 前端（Web 控制台/播放器 UI）
 
+支持在**一个 Compose 项目、一个 Web 入口**下连接多台 TeamSpeak 服务器。各服务器独立运行后端和语音服务，分别管理队列、音量、频道、管理员与音乐账号；网页顶部切换服务器。复制 `servers.example.json` 为 `servers.json`，运行 `python scripts/multi_server.py --init-env` 生成部署配置，再从源码构建启动。完整步骤、旧数据迁移及验证范围见 [多服务器运行指南](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器)。
+
 更多文档：
 
 - `HOWTOSTART.md`（部署/运行指南）

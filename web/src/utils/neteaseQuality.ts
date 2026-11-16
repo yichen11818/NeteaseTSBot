@@ -1,4 +1,6 @@
-export const NETEASE_QUALITY_STORAGE_KEY = 'tsbot:netease:quality'
+import { serverStorageKey } from '../servers'
+
+export const NETEASE_QUALITY_STORAGE_KEY = serverStorageKey('tsbot:netease:quality')
 
 export const NETEASE_QUALITY_OPTIONS = [
   { value: 'server', label: '跟随服务器' },

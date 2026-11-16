@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +41,7 @@ class Settings(BaseSettings):
     admin_token: str = ""
     initial_admin_password: str = ""
     initial_password_file: str = "./logs/initial-admin-password.txt"
+    session_cookie_name: str = Field(default="tsbot_admin_session", pattern=r"^[A-Za-z0-9_-]+$")
     voice_config_file: str = "./logs/voice-service.json"
     web_app_name: str = "Yumi TSBot"
     web_app_icon: str = ""

@@ -64,6 +64,10 @@ A modern Vue.js frontend for the TSBot music player with comprehensive music man
 
 ## Project Structure
 
+Multi-server deployments serve a public `servers.json` catalog alongside the Web app. The normal build includes an empty catalog for single-server mode; `scripts/multi_server.py` configures Nginx to serve the generated catalog instead. Routes under `/s/<id>/` use `/api/servers/<id>/` for every API call and managed asset. Server switching loads a new document, so timers, CSRF state and pending UI work remain tied to their original server. Tabs can manage different servers independently. Catalog or startup errors remain visible and offer a server selector; unknown IDs never fall back to another bot.
+
+Deployment, per-server credentials, data paths and migration are maintained in [HOWTOSTART.md](../HOWTOSTART.md#一个项目连接多个-teamspeak-服务器). The multi-server Web build uses the same-origin gateway rather than `VITE_API_BASE`. Existing development and preview scripts still serve single-server mode unless placed behind that gateway.
+
 ```
 web/
 ├── src/
