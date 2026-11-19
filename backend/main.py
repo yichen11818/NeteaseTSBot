@@ -3163,6 +3163,14 @@ async def _request_netease_song_url(*, song_id: str, cookie: str, quality_level:
                 return data
         if index + 1 < len(levels):
             logger.warning("网易云高音质请求被风控拒绝 (code=-460)，自动音质回退 standard 一次")
+    if normalized == "auto":
+        try:
+            legacy = await netease.song_url(song_id=song_id, cookie=cookie, br=320000)
+        except httpx.HTTPStatusError:
+            legacy = None
+        if isinstance(legacy, dict) and legacy.get("data"):
+            logger.warning("网易云按音质接口持续被风控，已退回旧接口按码率取流")
+            return legacy
     raise HTTPException(
         status_code=503,
         detail="网易云暂时拒绝播放请求 (code=-460)：网络环境风险，请稍后重试或选择标准音质",
