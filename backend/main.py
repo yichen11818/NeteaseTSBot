@@ -5107,6 +5107,41 @@ async def netease_likelist(request: Request, offset: int = 0, limit: int = 0) ->
     except Exception:
         songs = []
 
+    # 收藏时间：从「我喜欢的音乐」歌单的 trackIds 里取 at（毫秒），供前端按添加时间排序
+    added_at_by_id: dict[str, int] = {}
+    try:
+        playlists = await netease.user_playlist(uid=str(uid), cookie=cookie)
+        liked = next(
+            (
+                p
+                for p in (playlists or {}).get("playlist") or []
+                if int(p.get("specialType") or 0) == 5
+            ),
+            None,
+        )
+        if liked and liked.get("id"):
+            detail = await netease.playlist_detail(str(liked["id"]), cookie=cookie)
+            track_ids = ((detail or {}).get("playlist") or {}).get("trackIds") or []
+            for entry in track_ids:
+                if not isinstance(entry, dict):
+                    continue
+                track_id = entry.get("id")
+                added_at = entry.get("at")
+                if track_id is None or added_at is None:
+                    continue
+                try:
+                    added_at_by_id[str(track_id)] = int(added_at)
+                except (TypeError, ValueError):
+                    continue
+    except Exception:
+        added_at_by_id = {}
+
+    for song in songs:
+        if isinstance(song, dict):
+            added_at = added_at_by_id.get(str(song.get("id")))
+            if added_at is not None:
+                song["added_at"] = added_at
+
     # Keep original fields (ids, code, etc.) and add songs for frontend rendering.
     out = dict(data or {})
     out["songs"] = songs

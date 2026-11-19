@@ -1,23 +1,97 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { apiPost } from '../api'
 import { buildNeteaseQueuePayload } from '../utils/queue'
-import { 
-  Heart, 
-  Play, 
-  Plus, 
-  Clock, 
+import {
+  Heart,
+  Play,
+  Plus,
   Music,
   RefreshCw,
-  AlertCircle
+  AlertCircle,
+  ArrowUpDown,
+  Check,
+  ChevronDown,
+  Search
 } from 'lucide-vue-next'
 import { getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 import FloatingErrorToast from '../components/FloatingErrorToast.vue'
 import { useTransientMessage } from '../composables/useTransientMessage'
 import { useNeteaseLikes } from '../composables/useNeteaseLikes'
+import { isNearLikesBottom, useLikesDisplay, type LikesSortMode } from '../composables/useLikesDisplay'
 
-const { error, likes, loading, hasMore, load, loadMore } = useNeteaseLikes()
+const SORT_STORAGE_KEY = 'tsbot:likes:sort'
+
+type SortMode = LikesSortMode
+
+const SORT_OPTIONS: { value: SortMode; label: string }[] = [
+  { value: 'default', label: '顺序' },
+  { value: 'added', label: '添加时间（新→旧）' },
+  { value: 'name', label: '名称（A→Z）' },
+]
+
+const { error, likes, loading, load } = useNeteaseLikes()
+const sortMode = ref<SortMode>(loadSortMode())
+const showSortMenu = ref(false)
+const sortMenuRef = ref<HTMLElement | null>(null)
+const searchQuery = ref('')
+const songList = computed<any[]>(() => Array.isArray(likes.value?.songs) ? likes.value.songs : [])
+const { visibleSongs, hasMore, loadMore } = useLikesDisplay(songList, searchQuery, sortMode)
+const loadingMore = ref(false)
+let loadMoreFrame = 0
 const { message: actionError, showMessage: showActionError } = useTransientMessage()
+
+function loadSortMode(): SortMode {
+  try {
+    const raw = String(localStorage.getItem(SORT_STORAGE_KEY) || '')
+    return raw === 'added' || raw === 'name' ? raw : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+const currentSortLabel = computed(
+  () => SORT_OPTIONS.find((option) => option.value === sortMode.value)?.label || '顺序',
+)
+
+function selectSort(value: SortMode) {
+  sortMode.value = value
+  showSortMenu.value = false
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, sortMode.value)
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function toggleSortMenu() {
+  showSortMenu.value = !showSortMenu.value
+}
+
+function handleDocumentPointerDown(event: PointerEvent) {
+  if (!showSortMenu.value) return
+  const target = event.target as Node | null
+  if (!target) return
+  if (sortMenuRef.value?.contains(target)) return
+  showSortMenu.value = false
+}
+
+function handleDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') showSortMenu.value = false
+}
+
+function handleScroll(event: Event) {
+  if (loadingMore.value || !hasMore.value) return
+  const target = event.currentTarget as HTMLElement | null
+  if (!target || !isNearLikesBottom(target)) return
+
+  loadingMore.value = true
+  loadMoreFrame = requestAnimationFrame(() => {
+    loadMore()
+    loadingMore.value = false
+    loadMoreFrame = 0
+  })
+}
 
 const favoriteSongIds = ref<Set<number>>(new Set())
 
@@ -62,44 +136,114 @@ function formatDuration(duration: number): string {
 
 onMounted(() => {
   refreshFavoriteSongIds()
-  load(false) // 首次加载使用缓存
+  load(false)
+  document.addEventListener('pointerdown', handleDocumentPointerDown)
+  document.addEventListener('keydown', handleDocumentKeydown)
+})
+
+onUnmounted(() => {
+  if (loadMoreFrame) cancelAnimationFrame(loadMoreFrame)
+  document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  document.removeEventListener('keydown', handleDocumentKeydown)
 })
 </script>
 
 <template>
   <div class="h-full flex flex-col bg-gray-50">
-    <!-- Header -->
-    <div class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-20 shadow-sm">
-      <div class="flex items-center gap-4">
-        <h1 class="text-2xl font-bold text-gray-900 tracking-tight flex items-center gap-2">
-          <Heart :size="28" class="text-red-500" fill="currentColor" />
-          我的喜欢
-        </h1>
-        <span class="text-sm text-gray-500 hidden md:inline-block border-l border-gray-200 pl-4 h-5 leading-5">
-          显示您在网易云音乐中收藏的歌曲
-        </span>
+    <div class="bg-white border-b border-gray-200 px-6 py-4 sticky top-0 z-20 shadow-sm">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-4">
+          <h1 class="text-2xl font-bold text-gray-900 tracking-tight flex items-center gap-2">
+            <Heart :size="28" class="text-red-500" fill="currentColor" />
+            我的喜欢
+          </h1>
+          <span class="text-sm text-gray-500 hidden md:inline-block border-l border-gray-200 pl-4 h-5 leading-5">
+            显示您在网易云音乐中收藏的歌曲
+          </span>
+        </div>
+        <div class="flex items-center gap-2">
+          <div ref="sortMenuRef" class="relative">
+            <button
+              type="button"
+              @click="toggleSortMenu"
+              aria-haspopup="listbox"
+              :aria-expanded="showSortMenu"
+              title="排序方式"
+              class="group inline-flex items-center gap-2 whitespace-nowrap rounded-full border bg-white py-1.5 pl-3.5 pr-2.5 text-sm font-medium shadow-sm transition-all duration-200"
+              :class="showSortMenu
+                ? 'border-red-200 bg-red-50/50 text-red-600 shadow'
+                : 'border-gray-200 text-gray-600 hover:border-red-200 hover:text-red-600 hover:shadow'"
+            >
+              <ArrowUpDown
+                :size="15"
+                class="text-gray-400 transition-colors duration-200"
+                :class="{ '!text-red-500': showSortMenu, 'group-hover:text-red-500': !showSortMenu }"
+              />
+              <span>{{ currentSortLabel }}</span>
+              <ChevronDown
+                :size="14"
+                class="text-gray-400 transition-transform duration-200"
+                :class="{ 'rotate-180 text-red-500': showSortMenu }"
+              />
+            </button>
+
+            <Transition name="sort-fade">
+              <div
+                v-if="showSortMenu"
+                role="listbox"
+                class="absolute right-0 z-30 mt-2 w-52 origin-top-right rounded-2xl border border-gray-100 bg-white/95 p-1.5 shadow-xl shadow-gray-300/30 backdrop-blur-sm"
+              >
+                <button
+                  v-for="option in SORT_OPTIONS"
+                  :key="option.value"
+                  type="button"
+                  role="option"
+                  :aria-selected="sortMode === option.value"
+                  @click="selectSort(option.value)"
+                  class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition-colors duration-150"
+                  :class="sortMode === option.value
+                    ? 'bg-red-50 font-medium text-red-600'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'"
+                >
+                  <span>{{ option.label }}</span>
+                  <Check v-if="sortMode === option.value" :size="15" class="text-red-500" />
+                </button>
+              </div>
+            </Transition>
+          </div>
+          <button
+            @click="() => load(true)"
+            :disabled="loading"
+            class="btn-secondary text-sm py-1.5 px-3"
+          >
+            <RefreshCw :size="16" :class="{ 'animate-spin': loading }" />
+            <span class="hidden sm:inline">刷新</span>
+          </button>
+        </div>
       </div>
-      <button 
-        @click="() => load(true)"
-        :disabled="loading"
-        class="btn-secondary text-sm py-1.5 px-3"
-      >
-        <RefreshCw :size="16" :class="{ 'animate-spin': loading }" />
-        <span class="hidden sm:inline">刷新</span>
-      </button>
+
+      <div class="relative mt-3">
+        <Search :size="18" class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="在我喜欢中搜索..."
+          class="w-full pl-10 pr-4 py-2 bg-gray-100 border border-transparent focus:bg-white focus:border-red-300 focus:ring-2 focus:ring-red-100 rounded-lg text-sm transition-all duration-200 outline-none"
+        />
+      </div>
     </div>
 
-    <!-- Content -->
-    <div class="flex-1 overflow-y-auto px-4 md:px-6 py-4 md:py-6 pb-24 scrollbar-thin">
-      <!-- Loading state -->
+    <div
+      class="flex-1 overflow-y-auto px-4 md:px-6 py-4 md:py-6 pb-24 scrollbar-thin"
+      @scroll.passive="handleScroll"
+    >
       <div v-if="loading && (!likes || !likes.songs)" class="h-64 flex items-center justify-center">
         <div class="flex flex-col items-center gap-3">
           <div class="animate-spin rounded-full h-8 w-8 border-2 border-red-500 border-t-transparent"></div>
           <div class="text-sm text-gray-500 font-medium">加载收藏中...</div>
         </div>
       </div>
-      
-      <!-- Error state -->
+
       <div v-else-if="error" class="bg-red-50 border border-red-200 rounded-xl p-4 text-center max-w-lg mx-auto my-8">
         <div class="flex items-center justify-center gap-2 text-red-800 font-medium mb-1">
           <AlertCircle :size="18" />
@@ -110,8 +254,7 @@ onMounted(() => {
           <RouterLink to="/cookie" class="btn-secondary text-xs bg-white text-red-600 border-red-200 hover:bg-red-50">前往设置页面配置 Cookie</RouterLink>
         </div>
       </div>
-      
-      <!-- Empty state -->
+
       <div v-else-if="likes && (!likes.songs || likes.songs.length === 0)" class="empty-state">
         <div class="w-20 h-20 bg-red-50 rounded-2xl flex items-center justify-center mb-6 text-red-500 shadow-sm">
           <Heart :size="40" fill="currentColor" />
@@ -119,10 +262,16 @@ onMounted(() => {
         <div class="text-gray-900 text-xl font-bold mb-2">暂无收藏歌曲</div>
         <div class="text-gray-500">去搜索页面发现更多音乐吧</div>
       </div>
-      
-      <!-- Likes content -->
+
+      <div v-else-if="likes?.songs && visibleSongs.length === 0" class="empty-state">
+        <div class="w-20 h-20 bg-gray-50 rounded-2xl flex items-center justify-center mb-6 text-gray-300 shadow-sm">
+          <Search :size="40" />
+        </div>
+        <div class="text-gray-900 text-xl font-bold mb-2">没有找到匹配的收藏歌曲</div>
+        <div class="text-gray-500">换个关键词试试</div>
+      </div>
+
       <div v-else-if="likes?.songs" class="max-w-6xl mx-auto space-y-4 fade-in">
-        
         <div class="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
           <table class="w-full text-left border-collapse">
             <thead class="bg-gray-50/50 text-gray-400 text-xs uppercase font-semibold border-b border-gray-100 hidden md:table-header-group">
@@ -137,7 +286,7 @@ onMounted(() => {
             </thead>
             <tbody class="divide-y divide-gray-50">
               <tr
-                v-for="(song, index) in likes.songs"
+                v-for="(song, index) in visibleSongs"
                 :key="song.id"
                 class="group hover:bg-red-50/30 transition-colors duration-200"
               >
@@ -146,25 +295,24 @@ onMounted(() => {
                 </td>
                 <td class="px-3 md:px-6 py-3 md:py-4">
                   <div class="flex items-center gap-3 md:gap-4">
-                    <!-- Thumbnail -->
                     <div class="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 relative group/cover shadow-sm">
-                      <img 
-                        v-if="song.al?.picUrl" 
-                        :src="song.al.picUrl + '?param=100y100'" 
+                      <img
+                        v-if="song.al?.picUrl"
+                        :src="song.al.picUrl + '?param=100y100'"
                         :alt="song.name"
                         class="w-full h-full object-cover"
                       />
                       <div v-else class="w-full h-full bg-gradient-to-br from-red-400 to-pink-500 flex items-center justify-center">
                         <Music :size="16" class="text-white/50" />
                       </div>
-                      <div 
+                      <div
                         class="absolute inset-0 bg-black/10 opacity-0 group-hover/cover:opacity-100 flex items-center justify-center transition-all cursor-pointer backdrop-blur-[1px]"
                         @click="playTrack(song)"
                       >
                         <Play :size="16" class="text-white drop-shadow-md" fill="currentColor" />
                       </div>
                     </div>
-                    
+
                     <div class="min-w-0">
                       <div class="font-semibold text-gray-900 line-clamp-1 text-sm group-hover:text-red-600 transition-colors">{{ song.name }}</div>
                       <div class="text-xs text-gray-500 md:hidden line-clamp-1 mt-0.5">
@@ -191,7 +339,7 @@ onMounted(() => {
                     >
                       <Plus :size="18" />
                     </button>
-                    
+
                     <button
                       @click="playTrack(song)"
                       class="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -199,8 +347,8 @@ onMounted(() => {
                     >
                       <Play :size="18" />
                     </button>
-                    
-                    <button 
+
+                    <button
                       @click="toggleLocalFavorite(song)"
                       :class="isLocalFavorite(song) ? 'text-red-500 bg-red-50' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'"
                       class="p-2 rounded-lg transition-colors"
@@ -216,14 +364,10 @@ onMounted(() => {
         </div>
 
         <div class="flex items-center justify-center py-6">
-          <button
-            v-if="hasMore"
-            @click="loadMore"
-            :disabled="loading"
-            class="btn-secondary text-sm py-2 px-4"
-          >
-            <span>加载更多</span>
-          </button>
+          <div v-if="hasMore" class="flex items-center gap-2 text-xs text-gray-400">
+            <RefreshCw :size="14" :class="{ 'animate-spin': loadingMore }" />
+            <span>{{ loadingMore ? '正在加载更多...' : '继续下拉加载更多' }}</span>
+          </div>
           <div v-else class="text-xs text-gray-400">
             已加载全部（{{ likes?.total ?? (likes?.songs?.length ?? 0) }}）
           </div>
@@ -233,3 +377,16 @@ onMounted(() => {
   </div>
   <FloatingErrorToast :message="actionError" />
 </template>
+
+<style scoped>
+.sort-fade-enter-active,
+.sort-fade-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.sort-fade-enter-from,
+.sort-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
+</style>

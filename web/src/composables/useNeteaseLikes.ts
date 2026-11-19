@@ -17,12 +17,12 @@ function readCachedLikes(): any | null {
   return null
 }
 
-async function requestLikes(offset: number, useCache: boolean): Promise<any> {
+async function requestLikes(offset: number, limit: number, useCache: boolean): Promise<any> {
   const cached = useCache ? readCachedLikes() : null
   if (cached) return cached
   const cookie = localStorage.getItem(USER_COOKIE_KEY) || ''
   if (!cookie && !DEMO_MODE) throw new Error('需要先设置网易云音乐 Cookie')
-  const data = await apiGet<any>(`/netease/likes?offset=${offset}&limit=${PAGE_SIZE}`, { 'X-Netease-Cookie': cookie })
+  const data = await apiGet<any>(`/netease/likes?offset=${offset}&limit=${limit}`, { 'X-Netease-Cookie': cookie })
   if (offset === 0) localStorage.setItem(LIKES_CACHE_KEY, JSON.stringify({ data, timestamp: Date.now() }))
   return data
 }
@@ -40,7 +40,11 @@ export function useNeteaseLikes() {
     error.value = ''
     if (reset) { likes.value = null; offset.value = 0; hasMore.value = false }
     try {
-      const data = await requestLikes(offset.value, reset && !forceRefresh)
+      const data = await requestLikes(
+        reset ? 0 : offset.value,
+        reset ? 0 : PAGE_SIZE,
+        reset && !forceRefresh,
+      )
       const previousSongs = likes.value?.songs || []
       likes.value = reset ? data : { ...likes.value, ...data, songs: [...previousSongs, ...(data.songs || [])] }
       offset.value = Number(data?.offset ?? offset.value) + (Number(data?.limit ?? 0) || PAGE_SIZE)
