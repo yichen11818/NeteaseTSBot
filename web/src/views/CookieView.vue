@@ -369,6 +369,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { apiGet, apiPost } from '../api'
+import { readServerStorage, removeServerStorage, writeServerStorage } from '../servers'
 import { 
   Settings, 
   Info, 
@@ -389,7 +390,7 @@ withDefaults(defineProps<{ embedded?: boolean }>(), {
 
 const USER_COOKIE_KEY = 'tsbot_user_netease_cookie'
 
-const userCookie = ref(localStorage.getItem(USER_COOKIE_KEY) || '')
+const userCookie = ref(readServerStorage(USER_COOKIE_KEY))
 const userQrKey = ref('')
 const userQrImg = ref('')
 
@@ -426,7 +427,7 @@ function getAdminHeaders(): Record<string, string> {
 
 async function load() {
   status.value = ''
-  userCookie.value = localStorage.getItem(USER_COOKIE_KEY) || ''
+  userCookie.value = readServerStorage(USER_COOKIE_KEY)
   const st = await apiGet<{ admin_cookie_set: boolean }>('/admin/status')
   adminStatus.value = !!st?.admin_cookie_set
 
@@ -616,7 +617,7 @@ async function setBilibiliAdminCookie() {
 }
 
 function clearUserCookie() {
-  localStorage.removeItem(USER_COOKIE_KEY)
+  removeServerStorage(USER_COOKIE_KEY)
   userCookie.value = ''
   status.value = 'cleared user cookie (localStorage)'
 }
@@ -678,7 +679,7 @@ async function checkUserQr() {
     if (code === 803) {
       const cookie = String(r?.cookie || '')
       if (!cookie) throw new Error('authorized but cookie is empty')
-      localStorage.setItem(USER_COOKIE_KEY, cookie)
+      writeServerStorage(USER_COOKIE_KEY, cookie)
       userCookie.value = cookie
       status.value = 'user authorized'
       stopUserPoll()
