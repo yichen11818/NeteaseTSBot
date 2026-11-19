@@ -38,7 +38,7 @@ export function useLikesDisplay(
   const visibleSongs = computed(() => matchedSongs.value.slice(0, displayedCount.value))
   const hasMore = computed(() => displayedCount.value < matchedSongs.value.length)
 
-  watch([searchQuery, sortMode], () => {
+  watch([songs, searchQuery, sortMode], () => {
     displayedCount.value = PAGE_SIZE
   }, { flush: 'sync' })
 

@@ -11,6 +11,14 @@ function makeSongs(count: number) {
 }
 
 describe('liked songs display', () => {
+  it('starts at the first display page after refreshing the collection', () => {
+    const songs = ref(makeSongs(450))
+    const display = useLikesDisplay(songs, ref(''), ref('default'))
+    display.loadMore()
+    expect(display.visibleSongs.value).toHaveLength(400)
+    songs.value = makeSongs(450)
+    expect(display.visibleSongs.value).toHaveLength(200)
+  })
   it('shows the first 200 songs and reveals another 200 each time', () => {
     const songs = ref(makeSongs(450))
     const query = ref('')

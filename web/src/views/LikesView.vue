@@ -9,31 +9,21 @@ import {
   Music,
   RefreshCw,
   AlertCircle,
-  ArrowUpDown,
-  Check,
-  ChevronDown,
   Search
 } from 'lucide-vue-next'
 import { getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 import FloatingErrorToast from '../components/FloatingErrorToast.vue'
 import { useTransientMessage } from '../composables/useTransientMessage'
 import { useNeteaseLikes } from '../composables/useNeteaseLikes'
+import LikesSortSelector from '../components/LikesSortSelector.vue'
 import { isNearLikesBottom, useLikesDisplay, type LikesSortMode } from '../composables/useLikesDisplay'
 
 const SORT_STORAGE_KEY = 'tsbot:likes:sort'
 
 type SortMode = LikesSortMode
 
-const SORT_OPTIONS: { value: SortMode; label: string }[] = [
-  { value: 'default', label: '顺序' },
-  { value: 'added', label: '添加时间（新→旧）' },
-  { value: 'name', label: '名称（A→Z）' },
-]
-
 const { error, likes, loading, load } = useNeteaseLikes()
 const sortMode = ref<SortMode>(loadSortMode())
-const showSortMenu = ref(false)
-const sortMenuRef = ref<HTMLElement | null>(null)
 const searchQuery = ref('')
 const songList = computed<any[]>(() => Array.isArray(likes.value?.songs) ? likes.value.songs : [])
 const { visibleSongs, hasMore, loadMore } = useLikesDisplay(songList, searchQuery, sortMode)
@@ -42,42 +32,13 @@ let loadMoreFrame = 0
 const { message: actionError, showMessage: showActionError } = useTransientMessage()
 
 function loadSortMode(): SortMode {
-  try {
-    const raw = String(localStorage.getItem(SORT_STORAGE_KEY) || '')
-    return raw === 'added' || raw === 'name' ? raw : 'default'
-  } catch {
-    return 'default'
-  }
+  const raw = localStorage.getItem(SORT_STORAGE_KEY)
+  return raw === 'added' || raw === 'name' ? raw : 'default'
 }
-
-const currentSortLabel = computed(
-  () => SORT_OPTIONS.find((option) => option.value === sortMode.value)?.label || '顺序',
-)
 
 function selectSort(value: SortMode) {
+  localStorage.setItem(SORT_STORAGE_KEY, value)
   sortMode.value = value
-  showSortMenu.value = false
-  try {
-    localStorage.setItem(SORT_STORAGE_KEY, sortMode.value)
-  } catch {
-    // Ignore storage failures.
-  }
-}
-
-function toggleSortMenu() {
-  showSortMenu.value = !showSortMenu.value
-}
-
-function handleDocumentPointerDown(event: PointerEvent) {
-  if (!showSortMenu.value) return
-  const target = event.target as Node | null
-  if (!target) return
-  if (sortMenuRef.value?.contains(target)) return
-  showSortMenu.value = false
-}
-
-function handleDocumentKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') showSortMenu.value = false
 }
 
 function handleScroll(event: Event) {
@@ -137,23 +98,19 @@ function formatDuration(duration: number): string {
 onMounted(() => {
   refreshFavoriteSongIds()
   load(false)
-  document.addEventListener('pointerdown', handleDocumentPointerDown)
-  document.addEventListener('keydown', handleDocumentKeydown)
 })
 
 onUnmounted(() => {
   if (loadMoreFrame) cancelAnimationFrame(loadMoreFrame)
-  document.removeEventListener('pointerdown', handleDocumentPointerDown)
-  document.removeEventListener('keydown', handleDocumentKeydown)
 })
 </script>
 
 <template>
   <div class="h-full flex flex-col bg-gray-50">
-    <div class="bg-white border-b border-gray-200 px-6 py-4 sticky top-0 z-20 shadow-sm">
+    <div class="bg-white border-b border-gray-200 px-4 md:px-6 py-4 sticky top-0 z-20 shadow-sm">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-4">
-          <h1 class="text-2xl font-bold text-gray-900 tracking-tight flex items-center gap-2">
+          <h1 class="text-xl sm:text-2xl font-bold text-gray-900 tracking-tight flex items-center gap-2 whitespace-nowrap">
             <Heart :size="28" class="text-red-500" fill="currentColor" />
             我的喜欢
           </h1>
@@ -162,57 +119,10 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="flex items-center gap-2">
-          <div ref="sortMenuRef" class="relative">
-            <button
-              type="button"
-              @click="toggleSortMenu"
-              aria-haspopup="listbox"
-              :aria-expanded="showSortMenu"
-              title="排序方式"
-              class="group inline-flex items-center gap-2 whitespace-nowrap rounded-full border bg-white py-1.5 pl-3.5 pr-2.5 text-sm font-medium shadow-sm transition-all duration-200"
-              :class="showSortMenu
-                ? 'border-red-200 bg-red-50/50 text-red-600 shadow'
-                : 'border-gray-200 text-gray-600 hover:border-red-200 hover:text-red-600 hover:shadow'"
-            >
-              <ArrowUpDown
-                :size="15"
-                class="text-gray-400 transition-colors duration-200"
-                :class="{ '!text-red-500': showSortMenu, 'group-hover:text-red-500': !showSortMenu }"
-              />
-              <span>{{ currentSortLabel }}</span>
-              <ChevronDown
-                :size="14"
-                class="text-gray-400 transition-transform duration-200"
-                :class="{ 'rotate-180 text-red-500': showSortMenu }"
-              />
-            </button>
-
-            <Transition name="sort-fade">
-              <div
-                v-if="showSortMenu"
-                role="listbox"
-                class="absolute right-0 z-30 mt-2 w-52 origin-top-right rounded-2xl border border-gray-100 bg-white/95 p-1.5 shadow-xl shadow-gray-300/30 backdrop-blur-sm"
-              >
-                <button
-                  v-for="option in SORT_OPTIONS"
-                  :key="option.value"
-                  type="button"
-                  role="option"
-                  :aria-selected="sortMode === option.value"
-                  @click="selectSort(option.value)"
-                  class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition-colors duration-150"
-                  :class="sortMode === option.value
-                    ? 'bg-red-50 font-medium text-red-600'
-                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'"
-                >
-                  <span>{{ option.label }}</span>
-                  <Check v-if="sortMode === option.value" :size="15" class="text-red-500" />
-                </button>
-              </div>
-            </Transition>
-          </div>
+          <LikesSortSelector :model-value="sortMode" @update:model-value="selectSort" />
           <button
             @click="() => load(true)"
+            aria-label="刷新"
             :disabled="loading"
             class="btn-secondary text-sm py-1.5 px-3"
           >
@@ -227,6 +137,7 @@ onUnmounted(() => {
         <input
           v-model="searchQuery"
           type="text"
+          aria-label="搜索我的喜欢"
           placeholder="在我喜欢中搜索..."
           class="w-full pl-10 pr-4 py-2 bg-gray-100 border border-transparent focus:bg-white focus:border-red-300 focus:ring-2 focus:ring-red-100 rounded-lg text-sm transition-all duration-200 outline-none"
         />
@@ -290,7 +201,7 @@ onUnmounted(() => {
                 :key="song.id"
                 class="group hover:bg-red-50/30 transition-colors duration-200"
               >
-                <td class="px-3 md:px-6 py-3 md:py-4 text-sm text-gray-400 text-center font-medium group-hover:text-red-600 w-10 md:w-16">
+                <td class="hidden md:table-cell px-3 md:px-6 py-3 md:py-4 text-sm text-gray-400 text-center font-medium group-hover:text-red-600 w-10 md:w-16">
                   {{ Number(index) + 1 }}
                 </td>
                 <td class="px-3 md:px-6 py-3 md:py-4">
@@ -327,7 +238,7 @@ onUnmounted(() => {
                 <td class="px-3 md:px-6 py-3 md:py-4 text-sm text-gray-500 hidden lg:table-cell">
                   <div class="truncate max-w-[150px]">{{ song.al?.name }}</div>
                 </td>
-                <td class="px-3 md:px-6 py-3 md:py-4 text-right text-sm text-gray-400 font-mono tabular-nums">
+                <td class="hidden sm:table-cell px-3 md:px-6 py-3 md:py-4 text-right text-sm text-gray-400 font-mono tabular-nums">
                   {{ formatDuration(song.dt) }}
                 </td>
                 <td class="px-3 md:px-6 py-3 md:py-4 text-right">
@@ -377,16 +288,3 @@ onUnmounted(() => {
   </div>
   <FloatingErrorToast :message="actionError" />
 </template>
-
-<style scoped>
-.sort-fade-enter-active,
-.sort-fade-leave-active {
-  transition: opacity 160ms ease, transform 160ms ease;
-}
-
-.sort-fade-enter-from,
-.sort-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-4px) scale(0.98);
-}
-</style>
