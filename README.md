@@ -463,6 +463,10 @@ docker compose -f docker-compose.prebuilt.yml up -d
 
 ### 网易云 Cookie
 
+个人账号的 Cookie 保存在浏览器中，多服务器模式按服务器隔离；账户页与“喜欢”列表共用同一存储入口。旧版全局 Cookie 只迁移一次，已有独立凭证时保留当前凭证并清理旧项；更新或清除账号也会移除旧项，避免其他服务器继承。
+
+`auto` 音质请求遇到 `-460` 风控时先尝试标准音质；仍被风控才尝试旧接口按 320000 bps 取流。显式选择音质不自动降级，其他上游错误保留准确诊断。详见 [各来源音质说明](docs/MUSIC_QUALITY.md)。
+
 后端会把“管理员网易云 Cookie”加密存储到数据库（`tsbot.db`）中，用于：
 
 - 获取更稳定的歌曲 URL（避免部分接口匿名受限）
@@ -555,7 +559,8 @@ B 站后台授权支持扫码登录或手动 Cookie，用于登录态接口和 A
 | [@yichen11818](https://github.com/yichen11818) | 项目发起与维护、核心功能开发、部署支持、文档和社区反馈处理。 |
 | [@BreadAira](https://github.com/BreadAira) | 修复网易云 Cookie 解析、B 站封面加载和 Docker 环境音频共享、Chromium 等问题（[PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9)、[Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)）。 |
 | [@Marius128](https://github.com/Marius128) | 贡献可选的 TeamSpeak 用户等级系统、B 站聊天点播，以及相应文档和测试（[PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)）。 |
-| [@nitonitori](https://github.com/nitonitori) | 贡献网易云风控时的自动音质回退、按 ID 直接导入歌单、可配置的播放恢复与冷却、网易云与 QQ 音乐独立默认音质，以及后端 Playwright 镜像构建修复（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)、[#26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)、[#31](https://github.com/yichen11818/NeteaseTSBot/pull/31)，均已合并）。感谢同步完善文档与回归测试，并根据评审修复边界问题。 |
+| [@nitonitori](https://github.com/nitonitori) | 贡献网易云风控时的自动音质回退、按 ID 直接导入歌单、可配置的播放恢复与冷却、网易云与 QQ 音乐独立默认音质，可配置 PCM 预缓冲与背压，以及后端 Playwright 镜像构建修复（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)、[#26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)、[#29](https://github.com/yichen11818/NeteaseTSBot/pull/29)、[#31](https://github.com/yichen11818/NeteaseTSBot/pull/31)，均已合并）。感谢同步完善文档与回归测试，并根据评审修复边界问题。 |
+| [@ZhuMengMeng666](https://github.com/ZhuMengMeng666) | 贡献多服务器网易云个人 Cookie 隔离、自动音质风控后的旧码率接口回退，以及多服务器健康检查、重启策略与日志轮转（[PR #32](https://github.com/yichen11818/NeteaseTSBot/pull/32)、[#33](https://github.com/yichen11818/NeteaseTSBot/pull/33)、[#34](https://github.com/yichen11818/NeteaseTSBot/pull/34)，均已合并）。感谢完善多服务器使用体验和运行维护能力。 |
 
 ### 功能提案、问题反馈与验证
 

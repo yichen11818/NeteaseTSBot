@@ -395,6 +395,10 @@ The built-in adapter supports video search and audio playback, with local audio 
 
 ### Netease Cookie
 
+Personal account cookies are stored in the browser and scoped to each server in multi-server mode. The account page and liked songs use the same storage entry point. Legacy global cookies migrate once; existing scoped credentials take precedence, and reading, replacing or clearing an account retires stale global credentials so another server cannot inherit them.
+
+For `auto` quality, a `-460` risk-control response triggers one standard-quality attempt, then a legacy endpoint attempt at 320000 bps only if standard is also blocked. Explicit quality selections do not downgrade automatically; unrelated upstream errors retain accurate diagnostics. See [provider quality behavior](docs/MUSIC_QUALITY.md).
+
 Backend encrypts and stores the "admin Netease cookie" in database (`tsbot.db`) for:
 
 - getting more stable song URLs (avoid anonymous restrictions on some endpoints)
@@ -482,7 +486,8 @@ The acknowledgments below are based on commit, pull request, and issue history. 
 | [@yichen11818](https://github.com/yichen11818) | Project creation and maintenance, core features, deployment support, documentation, and community support. |
 | [@BreadAira](https://github.com/BreadAira) | Fixes for Netease cookie parsing, Bilibili covers, shared audio files and Chromium in Docker deployments ([PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9), [Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)). |
 | [@Marius128](https://github.com/Marius128) | Optional TeamSpeak user levels, Bilibili chat playback commands, and accompanying documentation and tests ([PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)). |
-| [@nitonitori](https://github.com/nitonitori) | Netease automatic quality fallback on risk-control errors, direct playlist ID imports, configurable playback recovery and cooldown, separate Netease and QQ Music quality defaults, and the backend Playwright image build fix ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), [#26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), [#31](https://github.com/yichen11818/NeteaseTSBot/pull/31), all merged). Thank you for the accompanying documentation, regression tests, and fixes addressing review findings. |
+| [@nitonitori](https://github.com/nitonitori) | Netease automatic quality fallback on risk-control errors, direct playlist ID imports, configurable playback recovery and cooldown, separate Netease and QQ Music quality defaults, configurable PCM prefetch with backpressure, and the backend Playwright image build fix ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), [#26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), [#29](https://github.com/yichen11818/NeteaseTSBot/pull/29), [#31](https://github.com/yichen11818/NeteaseTSBot/pull/31), all merged). Thank you for the accompanying documentation, regression tests, and fixes addressing review findings. |
+| [@ZhuMengMeng666](https://github.com/ZhuMengMeng666) | Per-server personal Netease cookie isolation, legacy bitrate fallback after automatic quality risk-control failures, and multi-server health checks, restart policies and log rotation ([PR #32](https://github.com/yichen11818/NeteaseTSBot/pull/32), [#33](https://github.com/yichen11818/NeteaseTSBot/pull/33), [#34](https://github.com/yichen11818/NeteaseTSBot/pull/34), all merged). Thank you for improving multi-server operation and maintenance. |
 
 ### Proposals, Reports, and Verification
 
