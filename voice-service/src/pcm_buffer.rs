@@ -2,7 +2,21 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-pub const PCM_CHANNEL_CAPACITY: usize = if cfg!(windows) { 200 } else { 50 };
+const FRAMES_PER_SECOND: usize = 50;
+const DEFAULT_BUFFER_SECONDS: usize = 5;
+const MIN_BUFFER_SECONDS: usize = 1;
+const MAX_BUFFER_SECONDS: usize = 30;
+pub const DEFAULT_BUFFERED_FRAMES: usize = DEFAULT_BUFFER_SECONDS * FRAMES_PER_SECOND;
+
+pub fn max_frames_from_config(raw: Option<&str>) -> usize {
+    let seconds = raw
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|seconds| (MIN_BUFFER_SECONDS..=MAX_BUFFER_SECONDS).contains(seconds))
+        .unwrap_or(DEFAULT_BUFFER_SECONDS);
+    seconds * FRAMES_PER_SECOND
+}
 const PREBUFFER_FRAMES: usize = if cfg!(windows) { 15 } else { 5 };
 const LATE_FRAME_WAIT: Duration = Duration::from_millis(if cfg!(windows) { 8 } else { 3 });
 
@@ -20,8 +34,8 @@ pub struct PcmBuffer {
 }
 
 impl PcmBuffer {
-    pub fn channel() -> (mpsc::Sender<Vec<u8>>, Self) {
-        let (sender, receiver) = mpsc::channel(PCM_CHANNEL_CAPACITY);
+    pub fn channel(max_frames: usize) -> (mpsc::Sender<Vec<u8>>, Self) {
+        let (sender, receiver) = mpsc::channel(max_frames);
         (
             sender,
             Self {

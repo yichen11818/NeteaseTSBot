@@ -63,7 +63,7 @@ jobs:
       - run: npm --prefix web run build:demo
 
   voice:
-    name: Voice protocol check
+    name: Voice protocol and buffering checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

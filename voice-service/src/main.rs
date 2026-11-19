@@ -22,11 +22,13 @@ use tracing::{error, info, warn};
 
 mod logger;
 mod playback;
+#[cfg(test)]
+mod pcm_playback_tests;
 
 use playback::PlaybackRequest;
 use voice_service::playback_status::SharedStatus;
 
-use voice_service::pcm_buffer::{PcmBuffer, PcmFrame};
+use voice_service::pcm_buffer::{max_frames_from_config, PcmBuffer, PcmFrame};
 
 use tsclientlib::{Connection, DisconnectOptions, Identity, StreamItem, Version};
 use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, OutPacket, PacketType};
@@ -1467,7 +1469,10 @@ async fn playback_loop(
 
     // Encode/send loop must keep a stable 20ms cadence to prevent TS3 jitter buffer underruns.
     // We decouple ffmpeg reads from the send cadence via a small PCM frame queue.
-    let (pcm_tx, mut pcm_buffer) = PcmBuffer::channel();
+    let max_frames = max_frames_from_config(
+        env::var("TSBOT_VOICE_PCM_BUFFER_SECONDS").ok().as_deref(),
+    );
+    let (pcm_tx, mut pcm_buffer) = PcmBuffer::channel(max_frames);
 
     let encoder = Encoder::new(
         audiopus::SampleRate::Hz48000,
