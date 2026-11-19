@@ -33,6 +33,33 @@ export function serverStorageKey(key: string): string {
   return id ? `tsbot:server:${id}:${key}` : key
 }
 
+export function readServerStorage(key: string): string {
+  const scopedKey = serverStorageKey(key)
+  const current = localStorage.getItem(scopedKey)
+  if (current !== null) {
+    if (scopedKey !== key) localStorage.removeItem(key)
+    return current
+  }
+  if (scopedKey === key) return ''
+
+  const legacy = localStorage.getItem(key)
+  if (legacy === null) return ''
+  localStorage.setItem(scopedKey, legacy)
+  localStorage.removeItem(key)
+  return legacy
+}
+
+export function writeServerStorage(key: string, value: string): void {
+  const scopedKey = serverStorageKey(key)
+  localStorage.setItem(scopedKey, value)
+  if (scopedKey !== key) localStorage.removeItem(key)
+}
+
+export function removeServerStorage(key: string): void {
+  localStorage.removeItem(serverStorageKey(key))
+  localStorage.removeItem(key)
+}
+
 export function parseServerCatalog(value: unknown): readonly ServerEntry[] {
   const list = (value as { servers?: unknown } | null)?.servers
   if (!Array.isArray(list)) throw new Error('服务器清单格式错误：缺少 servers 数组')

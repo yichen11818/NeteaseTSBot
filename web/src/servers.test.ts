@@ -50,4 +50,39 @@ describe('server selection', () => {
     vi.stubGlobal('window', { location: { pathname: '/search' } })
     expect(serverStorageKey('likes')).toBe('likes')
   })
+
+  it('migrates legacy account data into the current server scope without leaking it', async () => {
+    const store = new Map<string, string>([
+      ['tsbot_user_netease_cookie', 'legacy-cookie'],
+      ['tsbot:server:friends:tsbot_user_netease_cookie', 'friends-cookie'],
+    ])
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+      removeItem: (key: string) => store.delete(key),
+    })
+    vi.stubGlobal('window', { location: { pathname: '/s/home/cookie' } })
+
+    const {
+      readServerStorage,
+      removeServerStorage,
+      writeServerStorage,
+    } = await import('./servers')
+
+    expect(readServerStorage('tsbot_user_netease_cookie')).toBe('legacy-cookie')
+    expect(store.get('tsbot:server:home:tsbot_user_netease_cookie')).toBe('legacy-cookie')
+    expect(store.has('tsbot_user_netease_cookie')).toBe(false)
+
+    vi.stubGlobal('window', { location: { pathname: '/s/friends/cookie' } })
+    expect(readServerStorage('tsbot_user_netease_cookie')).toBe('friends-cookie')
+
+    vi.stubGlobal('window', { location: { pathname: '/s/hj/cookie' } })
+    expect(readServerStorage('tsbot_user_netease_cookie')).toBe('')
+
+    writeServerStorage('tsbot_user_netease_cookie', 'hj-cookie')
+    expect(store.get('tsbot:server:hj:tsbot_user_netease_cookie')).toBe('hj-cookie')
+
+    removeServerStorage('tsbot_user_netease_cookie')
+    expect(store.has('tsbot:server:hj:tsbot_user_netease_cookie')).toBe(false)
+  })
 })
