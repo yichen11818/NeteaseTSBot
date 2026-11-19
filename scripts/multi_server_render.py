@@ -9,6 +9,7 @@ DOCKER_DNS = "127.0.0.11"
 DNS_TTL_SECONDS = 10
 UPSTREAM_ZONE_SIZE = "64k"
 UPLOAD_LIMIT = "6m"  # Includes the existing 5 MiB managed-asset limit.
+LOG_OPTIONS = {"max-size": "10m", "max-file": "3"}
 
 
 def instance_service(server: Server, role: str, *, build: bool) -> dict:
@@ -19,6 +20,8 @@ def instance_service(server: Server, role: str, *, build: bool) -> dict:
         "pull_policy": "never",
         "env_file": [f"./instances/{server.id}/tsbot.env"],
         "networks": [f"server-{server.id}"],
+        "restart": "unless-stopped",
+        "logging": {"driver": "json-file", "options": LOG_OPTIONS},
         "volumes": [
             f"./instances/{server.id}/logs:/app/logs",
             f"./instances/{server.id}/data:/app/data",
@@ -47,9 +50,31 @@ def instance_services(server: Server, *, build: bool) -> dict:
     return {
         f"backend-{server.id}": {
             **instance_service(server, "backend", build=build), "environment": backend_env,
-            "depends_on": [f"voice-{server.id}"],
+            "depends_on": {f"voice-{server.id}": {"condition": "service_healthy"}},
+            "healthcheck": {
+                "test": [
+                    "CMD",
+                    "python",
+                    "-c",
+                    "import socket; socket.create_connection(('127.0.0.1', 8009), 2).close()",
+                ],
+                "interval": "15s",
+                "timeout": "5s",
+                "retries": 10,
+                "start_period": "30s",
+            },
         },
-        f"voice-{server.id}": {**instance_service(server, "voice", build=build), "environment": common_env},
+        f"voice-{server.id}": {
+            **instance_service(server, "voice", build=build),
+            "environment": common_env,
+            "healthcheck": {
+                "test": ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/50051'"],
+                "interval": "15s",
+                "timeout": "5s",
+                "retries": 10,
+                "start_period": "30s",
+            },
+        },
     }
 
 
@@ -60,11 +85,23 @@ def render_compose(deployment: Deployment) -> dict:
         "image": "tsbot-multi-web:local",
         "build": {"context": ".", "dockerfile": "Dockerfile.web"},
         "ports": [f"{deployment.web_port}:{WEB_PORT}"],
-        "depends_on": [f"backend-{server.id}" for server in deployment.servers],
+        "depends_on": {
+            f"backend-{server.id}": {"condition": "service_healthy"}
+            for server in deployment.servers
+        },
         "networks": [f"server-{server.id}" for server in deployment.servers],
         # Mount the directory so regenerated files remain visible after atomic replacement.
         "volumes": ["./.multi-server:/etc/tsbot-multi:ro"],
         "command": ["nginx", "-c", "/etc/tsbot-multi/nginx.conf", "-g", "daemon off;"],
+        "restart": "unless-stopped",
+        "healthcheck": {
+            "test": ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"],
+            "interval": "20s",
+            "timeout": "5s",
+            "retries": 5,
+            "start_period": "20s",
+        },
+        "logging": {"driver": "json-file", "options": LOG_OPTIONS},
     }
     return {
         "name": "tsbot-multi",
