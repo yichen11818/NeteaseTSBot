@@ -6,24 +6,28 @@ import { readServerStorage, serverStorageKey } from '../servers'
 const USER_COOKIE_KEY = 'tsbot_user_netease_cookie'
 const LIKES_CACHE_KEY = serverStorageKey('tsbot_likes_cache')
 const CACHE_DURATION_MS = 150 * 60 * 1000
-const PAGE_SIZE = 200
+const CACHE_VERSION = 2
 
 function readCachedLikes(): any | null {
   const cached = localStorage.getItem(LIKES_CACHE_KEY)
   if (!cached) return null
-  const { data, timestamp } = JSON.parse(cached)
-  if (Date.now() - timestamp <= CACHE_DURATION_MS) return data
+  const { data, timestamp, version } = JSON.parse(cached)
+  if (version === CACHE_VERSION && Array.isArray(data?.songs) && data?.has_more === false
+    && Date.now() - timestamp <= CACHE_DURATION_MS) return data
   localStorage.removeItem(LIKES_CACHE_KEY)
   return null
 }
 
-async function requestLikes(offset: number, useCache: boolean): Promise<any> {
-  const cached = useCache ? readCachedLikes() : null
-  if (cached) return cached
+async function requestLikes(useCache: boolean): Promise<any> {
   const cookie = readServerStorage(USER_COOKIE_KEY)
   if (!cookie && !DEMO_MODE) throw new Error('需要先设置网易云音乐 Cookie')
-  const data = await apiGet<any>(`/netease/likes?offset=${offset}&limit=${PAGE_SIZE}`, { 'X-Netease-Cookie': cookie })
-  if (offset === 0) localStorage.setItem(LIKES_CACHE_KEY, JSON.stringify({ data, timestamp: Date.now() }))
+  const cached = useCache ? readCachedLikes() : null
+  if (cached) return cached
+  const data = await apiGet<any>('/netease/likes?offset=0&limit=0', { 'X-Netease-Cookie': cookie })
+  if (!Array.isArray(data?.songs) || data?.has_more !== false) {
+    throw new Error('网易云收藏未完整加载，请刷新重试')
+  }
+  localStorage.setItem(LIKES_CACHE_KEY, JSON.stringify({ data, timestamp: Date.now(), version: CACHE_VERSION }))
   return data
 }
 
@@ -31,20 +35,14 @@ export function useNeteaseLikes() {
   const error = ref('')
   const likes = ref<any>(null)
   const loading = ref(false)
-  const offset = ref(0)
-  const hasMore = ref(false)
 
-  async function loadPage(reset: boolean, forceRefresh = false) {
-    if (loading.value || (!reset && !hasMore.value)) return
+  async function load(forceRefresh = false) {
+    if (loading.value) return
     loading.value = true
     error.value = ''
-    if (reset) { likes.value = null; offset.value = 0; hasMore.value = false }
+    likes.value = null
     try {
-      const data = await requestLikes(offset.value, reset && !forceRefresh)
-      const previousSongs = likes.value?.songs || []
-      likes.value = reset ? data : { ...likes.value, ...data, songs: [...previousSongs, ...(data.songs || [])] }
-      offset.value = Number(data?.offset ?? offset.value) + (Number(data?.limit ?? 0) || PAGE_SIZE)
-      hasMore.value = Boolean(data?.has_more)
+      likes.value = await requestLikes(!forceRefresh)
     } catch (cause) {
       error.value = cause instanceof Error ? cause.message : String(cause)
     } finally {
@@ -52,9 +50,5 @@ export function useNeteaseLikes() {
     }
   }
 
-  return {
-    error, likes, loading, hasMore,
-    load: (forceRefresh = false) => loadPage(true, forceRefresh),
-    loadMore: () => loadPage(false),
-  }
+  return { error, likes, loading, load }
 }

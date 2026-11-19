@@ -60,6 +60,7 @@ from .runtime_config import (
 )
 from .managed_assets import ASSET_BY_KEY, asset_path, asset_payload, delete_asset, detect_image_type, save_asset, MAX_IMAGE_BYTES
 from .netease import NeteaseClient
+from .netease_likes import fetch_likes
 from .netease_errors import LEGACY_AUTO_BITRATE, is_risk_response, risk_response_or_raise
 from .netease_cookie import extract_netease_auth_cookie, has_netease_auth_cookie
 from .qqmusic import QQMusicClient
@@ -5067,59 +5068,9 @@ async def netease_account(request: Request) -> dict:
 
 @app.get("/netease/likelist")
 async def netease_likelist(request: Request, offset: int = 0, limit: int = 0) -> dict:
-    cookie = _get_netease_cookie_from_header(request)
-    account = await netease.user_account(cookie=cookie)
-    profile = (account or {}).get("profile") or {}
-    uid = profile.get("userId")
-    if not uid:
-        raise HTTPException(status_code=400, detail="unable to determine uid from cookie")
-    data = await netease.likelist(uid=str(uid), cookie=cookie)
-    ids = (data or {}).get("ids") or []
-
-    songs: list[dict] = []
-    try:
-        if isinstance(ids, list) and ids:
-            chunk_size = 200
-            id_strs = [str(i) for i in ids if i is not None and str(i).strip()]
-
-            if offset < 0:
-                offset = 0
-            if limit and limit > 0:
-                page_ids = id_strs[offset : offset + limit]
-            else:
-                page_ids = id_strs
-
-            async def _fetch_song_detail(chunk: list[str]) -> list[dict]:
-                if not chunk:
-                    return []
-                detail = await netease.song_detail(song_id=",".join(chunk), cookie=cookie)
-                dsongs = (detail or {}).get("songs") or []
-                if isinstance(dsongs, list) and dsongs:
-                    return [s for s in dsongs if isinstance(s, dict)]
-                return []
-
-            chunks = [page_ids[i : i + chunk_size] for i in range(0, len(page_ids), chunk_size)]
-            results = await asyncio.gather(*[_fetch_song_detail(c) for c in chunks], return_exceptions=True)
-            for r in results:
-                if isinstance(r, Exception):
-                    continue
-                songs.extend(r)
-    except Exception:
-        songs = []
-
-    # Keep original fields (ids, code, etc.) and add songs for frontend rendering.
-    out = dict(data or {})
-    out["songs"] = songs
-    try:
-        if isinstance(ids, list):
-            out["total"] = len(ids)
-            out["offset"] = int(offset)
-            out["limit"] = int(limit)
-            if limit and limit > 0:
-                out["has_more"] = (offset + limit) < len(ids)
-    except Exception:
-        pass
-    return out
+    return await fetch_likes(
+        netease, cookie=_get_netease_cookie_from_header(request), offset=offset, limit=limit,
+    )
 
 
 @app.get("/netease/likes")

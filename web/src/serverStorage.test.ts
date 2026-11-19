@@ -51,7 +51,7 @@ it('preserves single-server read, write and clear behavior', () => {
 
 it('migrates cookies when loading likes before opening the account page', async () => {
   localStorage.removeItem(HOME_COOKIE)
-  const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ songs: [] })))
+  const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ songs: [], has_more: false })))
   vi.stubGlobal('fetch', fetch)
   const { useNeteaseLikes } = await import('./composables/useNeteaseLikes')
   const likes = useNeteaseLikes()

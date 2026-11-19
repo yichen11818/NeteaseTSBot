@@ -52,7 +52,7 @@ function toggleTheme() {
 
 <template>
   <div :class="['app-shell min-h-screen transition-colors duration-300', isLyricsRoute ? 'bg-black h-[100dvh] overflow-hidden' : 'bg-gray-50']">
-    <div v-if="(isAuthRoute || isLyricsRoute) && servers.length" class="fixed left-4 top-3 z-50 rounded-lg border border-gray-200 bg-white p-2 shadow-sm">
+    <div v-if="(isAuthRoute || isLyricsRoute) && servers.length" class="fixed left-4 top-3 z-50">
       <ServerSelector :servers="servers" :selected="selectedServer" />
     </div>
     <RouterView v-if="isAuthRoute" />
