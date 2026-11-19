@@ -50,13 +50,12 @@ def instance_services(server: Server, *, build: bool) -> dict:
     return {
         f"backend-{server.id}": {
             **instance_service(server, "backend", build=build), "environment": backend_env,
-            "depends_on": {f"voice-{server.id}": {"condition": "service_healthy"}},
             "healthcheck": {
                 "test": [
                     "CMD",
                     "python",
                     "-c",
-                    "import socket; socket.create_connection(('127.0.0.1', 8009), 2).close()",
+                    f"import socket; socket.create_connection(('127.0.0.1', {BACKEND_PORT}), 2).close()",
                 ],
                 "interval": "15s",
                 "timeout": "5s",
@@ -68,7 +67,7 @@ def instance_services(server: Server, *, build: bool) -> dict:
             **instance_service(server, "voice", build=build),
             "environment": common_env,
             "healthcheck": {
-                "test": ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/50051'"],
+                "test": ["CMD-SHELL", f"timeout 2 bash -c '</dev/tcp/127.0.0.1/{VOICE_PORT}'"],
                 "interval": "15s",
                 "timeout": "5s",
                 "retries": 10,
@@ -85,17 +84,14 @@ def render_compose(deployment: Deployment) -> dict:
         "image": "tsbot-multi-web:local",
         "build": {"context": ".", "dockerfile": "Dockerfile.web"},
         "ports": [f"{deployment.web_port}:{WEB_PORT}"],
-        "depends_on": {
-            f"backend-{server.id}": {"condition": "service_healthy"}
-            for server in deployment.servers
-        },
+        # Dynamic DNS lets the shared gateway start even when an instance is down.
         "networks": [f"server-{server.id}" for server in deployment.servers],
         # Mount the directory so regenerated files remain visible after atomic replacement.
         "volumes": ["./.multi-server:/etc/tsbot-multi:ro"],
         "command": ["nginx", "-c", "/etc/tsbot-multi/nginx.conf", "-g", "daemon off;"],
         "restart": "unless-stopped",
         "healthcheck": {
-            "test": ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"],
+            "test": ["CMD-SHELL", f"wget -q -O /dev/null http://127.0.0.1:{WEB_PORT}/"],
             "interval": "20s",
             "timeout": "5s",
             "retries": 5,

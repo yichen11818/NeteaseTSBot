@@ -49,8 +49,6 @@ class MultiServerDeploymentTests(unittest.TestCase):
         for identifier in ("home", "friends"):
             backend = services[f"backend-{identifier}"]
             voice = services[f"voice-{identifier}"]
-            self.assertEqual("service_healthy", backend["depends_on"][f"voice-{identifier}"]["condition"])
-            self.assertEqual("service_healthy", services["web"]["depends_on"][f"backend-{identifier}"]["condition"])
             for service in (backend, voice):
                 self.assertEqual("unless-stopped", service["restart"])
                 self.assertEqual({"max-size": "10m", "max-file": "3"}, service["logging"]["options"])
@@ -58,6 +56,15 @@ class MultiServerDeploymentTests(unittest.TestCase):
         self.assertEqual("unless-stopped", services["web"]["restart"])
         self.assertEqual({"max-size": "10m", "max-file": "3"}, services["web"]["logging"]["options"])
         self.assertIn("healthcheck", services["web"])
+
+    def test_gateway_and_management_can_start_without_unavailable_instances(self):
+        services = render_compose(PAIR)["services"]
+        self.assertNotIn("depends_on", services["web"])
+        for identifier in ("home", "friends"):
+            self.assertNotIn("depends_on", services[f"backend-{identifier}"])
+        nginx = render_nginx(PAIR)
+        self.assertIn("server backend-home:8009 resolve;", nginx)
+        self.assertIn("server backend-friends:8009 resolve;", nginx)
 
     def test_generated_catalog_contains_only_public_ids_and_labels(self):
         self.assertEqual({"servers": [{"id": "home", "name": "主服务器"},

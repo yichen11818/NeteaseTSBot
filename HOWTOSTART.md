@@ -304,6 +304,10 @@ docker compose -f docker-compose.multi.json up -d --build
 
 默认只有 Web 发布宿主机端口；backend 和 voice 仅连接该组的 Docker 网络，Web 网关接入所有组。后端分别使用 `voice-<id>:50051`，不发布 gRPC。每组的临时音频卷、数据目录及网络都独立。容器内数据库与共享配置路径由生成器固定，避免旧环境文件把两个实例指向同一数据位置。
 
+生成的 backend、voice 和 Web 均包含健康检查、`restart: unless-stopped`，以及 `json-file` 日志轮转（每文件 10 MiB，最多 3 个）。健康检查分别验证 backend / voice 的本地 TCP 监听端口和 Web 首页；不代表 TeamSpeak 已连接或音乐源可用。健康状态不会自动触发容器重启，重启策略只处理进程退出。Web 与 backend 不以其他实例健康为启动条件：某组故障时仍可打开服务器选择页，正常组继续提供服务；故障组的 API 返回错误，恢复后由动态 DNS 重新连接。
+
+配置核验：2026-11-19。生成器回归测试及 CI 网关独立启动检查覆盖配置和入口可用性；不代表已验证生产、灾备或真实 TeamSpeak 连接。已有部署需重新运行生成器并执行 `docker compose -f docker-compose.multi.json up -d` 才会应用这些策略，单服务器 Compose 和启动脚本不受影响。
+
 登录 Cookie 同时按名称和 `/api/servers/<id>/` 路径隔离。API、头像上传、播放控制均走当前服务器；外部集成示例为 `/api/servers/home/external/status`，使用 home 自己配置的 Token。不存在的服务器返回错误，不会改为控制第一台服务器。名称清单为公开信息，不应把敏感内容写入 `name`。
 
 浏览器里的本地收藏、搜索历史和主题仍是个人偏好，可以跨服务器使用；音乐账号 Cookie 缓存、“我喜欢的”缓存及音质偏好按服务器区分。此次不增加统一管理员账号或跨服务器同步播放。
