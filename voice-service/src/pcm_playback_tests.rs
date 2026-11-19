@@ -42,10 +42,9 @@ async fn ten_minute_playback_completes_with_bounded_pcm() {
         packets
     });
     let (_paused_sender, paused_receiver) = watch::channel(false);
-    let status = Arc::new(Mutex::new(SharedStatus {
-        volume_percent: 100,
-        ..Default::default()
-    }));
+    let mut initial_status = SharedStatus::idle();
+    initial_status.volume_percent = 100;
+    let status = Arc::new(Mutex::new(initial_status));
     let started = Instant::now();
     tokio::time::timeout(
         Duration::from_secs(630),
