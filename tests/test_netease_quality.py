@@ -88,6 +88,38 @@ class NeteaseQualityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(502, raised.exception.status_code)
         self.assertEqual(1, len(self.requests))
 
+    async def test_legacy_http_errors_are_not_misreported_as_risk_control(self):
+        for status in (404, 500):
+            self.responses = [(400, {"code": -460}), (400, {"code": -460}),
+                              (status, {"message": "MUSIC_U=do-not-reflect"})]
+            with self.subTest(status=status), self.assertRaises(HTTPException) as raised:
+                await main.song_url("22699090", "auto", session=None)
+            self.assertEqual(502, raised.exception.status_code)
+            self.assertIn(f"HTTP {status}", raised.exception.detail)
+            self.assertNotIn("-460", raised.exception.detail)
+            self.assertNotIn("MUSIC_U", raised.exception.detail)
+            self.assertNotIn("music-api.test", raised.exception.detail)
+
+    async def test_legacy_http_success_preserves_risk_and_other_api_errors(self):
+        cases = [({"code": -460, "data": [{}]}, 503), ({"code": 500}, 502),
+                 ({"code": 200, "data": []}, 502), ([], 502)]
+        for payload, expected in cases:
+            self.responses = [(400, {"code": -460}), (400, {"code": -460}), (200, payload)]
+            with self.subTest(payload=payload), self.assertRaises(HTTPException) as raised:
+                await main.song_url("22699090", "auto", session=None)
+            self.assertEqual(expected, raised.exception.status_code)
+
+    async def test_legacy_non_json_http_error_keeps_status_without_body(self):
+        self.responses = [(400, {"code": -460}), (400, {"code": -460})]
+        response = httpx.Response(502, text="MUSIC_U=do-not-reflect", request=httpx.Request("GET", "http://music-api.test"))
+        error = httpx.HTTPStatusError("upstream failed", request=response.request, response=response)
+        with patch.object(main.netease, "song_url", side_effect=error):
+            with self.assertRaises(HTTPException) as raised:
+                await main.song_url("22699090", "auto", session=None)
+        self.assertEqual(502, raised.exception.status_code)
+        self.assertIn("HTTP 502", raised.exception.detail)
+        self.assertNotIn("MUSIC_U", raised.exception.detail)
+
     async def test_playback_payload_uses_the_same_auto_fallback(self):
         self.responses = [(400, {"code": -460}), (200, self.playable())]
         result = await main._resolve_netease_playback_payload(

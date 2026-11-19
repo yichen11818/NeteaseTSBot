@@ -60,6 +60,7 @@ from .runtime_config import (
 )
 from .managed_assets import ASSET_BY_KEY, asset_path, asset_payload, delete_asset, detect_image_type, save_asset, MAX_IMAGE_BYTES
 from .netease import NeteaseClient
+from .netease_errors import LEGACY_AUTO_BITRATE, is_risk_response, risk_response_or_raise
 from .netease_cookie import extract_netease_auth_cookie, has_netease_auth_cookie
 from .qqmusic import QQMusicClient
 from .qqmusic_login import QQMusicCookieSetRequest, create_qqmusic_login_router
@@ -3139,7 +3140,7 @@ def _netease_notice_for_duration(duration_ms: int | None) -> str:
 
 
 async def _request_netease_song_url(*, song_id: str, cookie: str, quality_level: str) -> dict:
-    """Retry standard once when automatic quality is rejected by upstream risk control."""
+    """Auto quality tries standard, then legacy bitrate only for risk control."""
     normalized = _normalize_netease_quality_level(quality_level, strict=True)
     requested_level = _resolve_netease_request_level(normalized)
     levels = (requested_level, "standard") if normalized == "auto" else (requested_level,)
@@ -3147,29 +3148,20 @@ async def _request_netease_song_url(*, song_id: str, cookie: str, quality_level:
         try:
             data = await netease.song_url_v1(song_id=song_id, cookie=cookie, level=level)
         except httpx.HTTPStatusError as exc:
-            try:
-                payload = exc.response.json()
-            except ValueError:
-                payload = {}
-            code = payload.get("code") if isinstance(payload, dict) else None
-            if str(code) != "-460":
-                # Do not reflect response bodies, request URLs or credentials to chat/API callers.
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"网易云音乐接口返回 HTTP {exc.response.status_code}，请稍后重试或检查 API 服务",
-                ) from None
-        else:
-            if str(data.get("code")) != "-460":
-                return data
+            data = risk_response_or_raise(exc)
+        if not is_risk_response(data):
+            return data
         if index + 1 < len(levels):
             logger.warning("网易云高音质请求被风控拒绝 (code=-460)，自动音质回退 standard 一次")
     if normalized == "auto":
+        logger.warning("网易云按音质接口持续被风控，尝试旧接口按码率取流")
         try:
-            legacy = await netease.song_url(song_id=song_id, cookie=cookie, br=320000)
-        except httpx.HTTPStatusError:
-            legacy = None
-        if isinstance(legacy, dict) and legacy.get("data"):
-            logger.warning("网易云按音质接口持续被风控，已退回旧接口按码率取流")
+            legacy = await netease.song_url(song_id=song_id, cookie=cookie, br=LEGACY_AUTO_BITRATE)
+        except httpx.HTTPStatusError as exc:
+            legacy = risk_response_or_raise(exc)
+        if not isinstance(legacy, dict):
+            raise HTTPException(status_code=502, detail="网易云音乐接口返回无效的数据格式")
+        if not is_risk_response(legacy):
             return legacy
     raise HTTPException(
         status_code=503,
