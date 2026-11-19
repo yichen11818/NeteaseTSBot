@@ -102,7 +102,7 @@ TSBot 的目标是把边界重新划清：
 - **voice-service/**: Rust 语音服务（连接 TeamSpeak、播放音频，提供 gRPC 给后端调用）
 - **web/**: Vue3 + Vite 前端（Web 控制台/播放器 UI）
 
-支持在**一个 Compose 项目、一个 Web 入口**下连接多台 TeamSpeak 服务器。各服务器独立运行后端和语音服务，分别管理队列、音量、频道、管理员与音乐账号；网页顶部切换服务器。复制 `servers.example.json` 为 `servers.json`，运行 `python scripts/multi_server.py --init-env` 生成部署配置，再从源码构建启动。完整步骤、旧数据迁移及验证范围见 [多服务器运行指南](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器)。
+支持在**一个 Compose 项目、一个 Web 入口**下连接多台 TeamSpeak 服务器。各服务器独立运行后端和语音服务，分别管理队列、音量、频道、管理员与音乐账号；网页顶部切换服务器。复制 `servers.example.json` 为 `servers.json`，运行 `python scripts/multi_server.py --init-env` 生成部署配置，再从源码构建启动。完整步骤、旧数据迁移及验证范围见 [多服务器运行指南](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器)。 生成配置包含健康检查、进程退出重启和日志轮转；共享 Web 不等待所有实例健康，单组故障不会阻止管理入口启动。
 
 更多文档：
 
@@ -246,6 +246,10 @@ cp tsbot.env.example tsbot.env
 ```
 
 设置页右上角的“保存配置”只把当前表单持久化到数据库，适合先分组检查配置；“应用配置”会合并所有已保存但尚未应用的改动，并更新运行中的服务。TeamSpeak 或 Voice 配置发生变化时，voice-service 会正常断开并自动使用新配置重启；Web 会等待新进程返回对应的配置版本后显示“已重启成功”，不需要给后端 Docker Socket 或 systemd 管理权限。
+
+“系统配置 → 高级设置 → 服务与日志”中的 **PCM 预缓冲上限（秒）**控制 Voice 提前解码的音频量，默认 5 秒，可设为 1–30 秒。缓冲满后读取端等待播放消耗，长歌曲仍能完整播放，不会因超过缓冲长度而被截断或跳过。该限制适用于所有音乐来源，与歌曲总时长和压缩音质等级无关。该上限直接控制读取通道，不再维护额外 PCM 队列；进程和解码器本身也有内存开销，因此该值不是进程总内存限制。
+
+此项沿用“保存配置 / 应用配置”的流程，应用时会重启 Voice，正在播放的内容会中断。`TSBOT_VOICE_PCM_BUFFER_SECONDS` 可用于首次导入或独立运行 Voice；已有数据库配置优先。独立 Voice 遇到缺失、非整数或超出 1–30 范围的环境值时使用安全默认值 5 秒，不提供无限缓冲选项。
 
 “TeamSpeak 配置”同时包含连接、频道、身份和客户端简介；“Voice 服务”同时包含后端到 Voice 的连接与 Voice 运行参数，避免同一功能分散在重复菜单中。
 
@@ -459,6 +463,10 @@ docker compose -f docker-compose.prebuilt.yml up -d
 
 ### 网易云 Cookie
 
+个人账号的 Cookie 保存在浏览器中，多服务器模式按服务器隔离；账户页与“喜欢”列表共用同一存储入口。旧版全局 Cookie 只迁移一次，已有独立凭证时保留当前凭证并清理旧项；更新或清除账号也会移除旧项，避免其他服务器继承。
+
+`auto` 音质请求遇到 `-460` 风控时先尝试标准音质；仍被风控才尝试旧接口按 320000 bps 取流。显式选择音质不自动降级，其他上游错误保留准确诊断。详见 [各来源音质说明](docs/MUSIC_QUALITY.md)。
+
 后端会把“管理员网易云 Cookie”加密存储到数据库（`tsbot.db`）中，用于：
 
 - 获取更稳定的歌曲 URL（避免部分接口匿名受限）
@@ -551,7 +559,8 @@ B 站后台授权支持扫码登录或手动 Cookie，用于登录态接口和 A
 | [@yichen11818](https://github.com/yichen11818) | 项目发起与维护、核心功能开发、部署支持、文档和社区反馈处理。 |
 | [@BreadAira](https://github.com/BreadAira) | 修复网易云 Cookie 解析、B 站封面加载和 Docker 环境音频共享、Chromium 等问题（[PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9)、[Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)）。 |
 | [@Marius128](https://github.com/Marius128) | 贡献可选的 TeamSpeak 用户等级系统、B 站聊天点播，以及相应文档和测试（[PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)）。 |
-| [@nitonitori](https://github.com/nitonitori) | 贡献网易云风控时的自动音质回退、按 ID 直接导入歌单、可配置的播放恢复与冷却、网易云与 QQ 音乐独立默认音质，以及后端 Playwright 镜像构建修复（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)、[#26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)、[#31](https://github.com/yichen11818/NeteaseTSBot/pull/31)，均已合并）。感谢同步完善文档与回归测试，并根据评审修复边界问题。 |
+| [@nitonitori](https://github.com/nitonitori) | 贡献网易云风控时的自动音质回退、按 ID 直接导入歌单、可配置的播放恢复与冷却、网易云与 QQ 音乐独立默认音质，可配置 PCM 预缓冲与背压，以及后端 Playwright 镜像构建修复（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)、[#26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)、[#29](https://github.com/yichen11818/NeteaseTSBot/pull/29)、[#31](https://github.com/yichen11818/NeteaseTSBot/pull/31)，均已合并）。感谢同步完善文档与回归测试，并根据评审修复边界问题。 |
+| [@ZhuMengMeng666](https://github.com/ZhuMengMeng666) | 贡献多服务器网易云个人 Cookie 隔离、自动音质风控后的旧码率接口回退，以及多服务器健康检查、重启策略与日志轮转（[PR #32](https://github.com/yichen11818/NeteaseTSBot/pull/32)、[#33](https://github.com/yichen11818/NeteaseTSBot/pull/33)、[#34](https://github.com/yichen11818/NeteaseTSBot/pull/34)，均已合并）。感谢完善多服务器使用体验和运行维护能力。 |
 
 ### 功能提案、问题反馈与验证
 

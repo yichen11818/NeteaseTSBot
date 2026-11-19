@@ -81,6 +81,7 @@ DEFINITIONS: tuple[SettingDefinition, ...] = (
     SettingDefinition("voice.serverquery_sid", "serverquery", "虚拟服务器 SID", env="TSBOT_TS3_SERVERQUERY_SID", restart="voice"),
     SettingDefinition("voice.serverquery_use_port", "serverquery", "语音端口映射", type="integer", env="TSBOT_TS3_SERVERQUERY_USE_PORT", default=9987, minimum=1, maximum=65535, restart="voice"),
     SettingDefinition("voice.log_level", "backend", "Voice 日志等级", type="select", env="TSBOT_VOICE_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARNING", "ERROR"), restart="voice"),
+    SettingDefinition("voice.pcm_buffer_seconds", "backend", "PCM 预缓冲上限（秒）", type="integer", env="TSBOT_VOICE_PCM_BUFFER_SECONDS", default=5, minimum=1, maximum=30, restart="voice", strict_integer=True, help="限制提前解码的音频量，不限制歌曲时长。缓冲满后等待播放消耗，不丢帧或跳歌；应用配置后 Voice 会重启。读取通道即为缓冲上限，解码器另有自身开销。"),
     SettingDefinition("voice.state_file", "backend", "播放状态文件", env="TSBOT_VOICE_STATE_FILE", default="./logs/voice_state.json", restart="voice"),
 )
 

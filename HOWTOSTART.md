@@ -272,6 +272,8 @@ docker compose -f docker-compose.prebuilt.yml up -d
 
 配置核验日期：2026-11-17。多服务器模式使用一个 Web 入口，每台 TeamSpeak 服务器对应一组独立的 backend / voice 容器；三种镜像各构建一次，各组复用镜像。队列、历史、音量、频道、机器人身份、音乐账号、管理员账号和配置分别保存。网页顶部可以切换服务器；不同标签页可以同时管理不同服务器。切换网页不会停止任何服务器的播放。
 
+网易云个人 Cookie 按服务器隔离保存。首次访问账户页或读取喜欢列表时，旧版全局 Cookie 只迁移到当前服务器并删除全局项；当前服务器已有凭证时保留该凭证并清除旧全局项，更新或清除账户也同步清理旧项，避免其他服务器继承。行为核验：2026-11-19（前端回归测试）。
+
 这是 Docker Compose 的独立部署模式。原来的 Compose、`run-*.sh`、`run-*.ps1` 和 `nohup-*` 仍用于单服务器。以下步骤只配置本地源码及部署文件，不代表已修改远程测试、生产或灾备环境。
 
 ### 首次创建
@@ -303,6 +305,10 @@ docker compose -f docker-compose.multi.json up -d --build
 打开 `http://<部署主机>:8080`（端口可通过 `web_port` 修改），网页进入清单中的第一台服务器。也可以直接访问 `/s/home/search`、`/s/friends/search`。各服务器的 `admin` 初始密码位于 `instances/<id>/logs/initial-admin-password.txt`，分别登录并修改密码，然后在当前服务器的“系统配置”填写 TeamSpeak 地址、频道和音乐平台账号。
 
 默认只有 Web 发布宿主机端口；backend 和 voice 仅连接该组的 Docker 网络，Web 网关接入所有组。后端分别使用 `voice-<id>:50051`，不发布 gRPC。每组的临时音频卷、数据目录及网络都独立。容器内数据库与共享配置路径由生成器固定，避免旧环境文件把两个实例指向同一数据位置。
+
+生成的 backend、voice 和 Web 均包含健康检查、`restart: unless-stopped`，以及 `json-file` 日志轮转（每文件 10 MiB，最多 3 个）。健康检查分别验证 backend / voice 的本地 TCP 监听端口和 Web 首页；不代表 TeamSpeak 已连接或音乐源可用。健康状态不会自动触发容器重启，重启策略只处理进程退出。Web 与 backend 不以其他实例健康为启动条件：某组故障时仍可打开服务器选择页，正常组继续提供服务；故障组的 API 返回错误，恢复后由动态 DNS 重新连接。
+
+配置核验：2026-11-19。生成器回归测试及 CI 网关独立启动检查覆盖配置和入口可用性；不代表已验证生产、灾备或真实 TeamSpeak 连接。已有部署需重新运行生成器并执行 `docker compose -f docker-compose.multi.json up -d` 才会应用这些策略，单服务器 Compose 和启动脚本不受影响。
 
 登录 Cookie 同时按名称和 `/api/servers/<id>/` 路径隔离。API、头像上传、播放控制均走当前服务器；外部集成示例为 `/api/servers/home/external/status`，使用 home 自己配置的 Token。不存在的服务器返回错误，不会改为控制第一台服务器。名称清单为公开信息，不应把敏感内容写入 `name`。
 
@@ -372,6 +378,7 @@ DATABASE_URL=sqlite:///./tsbot.db
 - 界面图标和 TeamSpeak 机器人头像在 Web 设置页直接上传，固定保存在数据库目录旁的 `uploads/` 中；不再填写服务器图片路径。
 - “保存配置”只将表单持久化到数据库；“应用配置”才会更新运行服务。应用 TeamSpeak 或 Voice 改动后，voice-service 会优雅断开并自动用新配置重启，Web 在新进程返回后提示“已重启成功”。
 - “TeamSpeak 配置”包含连接、频道、身份和客户端简介；“Voice 服务”包含后端到 Voice 的连接与 Voice 运行参数。
+- “高级设置 → 服务与日志”的 PCM 预缓冲上限默认 5 秒，支持整数 1–30 秒，直接限制有界读取通道；缓冲满时 FFmpeg 等待，不截断曲目。该值不包含解码器及进程自身开销。首次启动可由 `TSBOT_VOICE_PCM_BUFFER_SECONDS` 导入，已有数据库配置优先；独立 Voice 对无效值使用 5 秒默认值。保存后需应用，Voice 重启会中断播放。配置说明核验：2026-11-19（源码检查，不代表已更新在线部署）。
 - 旧部署的 `TSBOT_TS3_*` 等变量会在数据库缺少对应值时导入一次，迁移后可从环境文件删除。
 - QQ 音乐能力由后端内建提供，不需要额外部署独立的 QQ 音乐 API 服务。
 - 网易云、QQ 音乐和 B 站授权统一位于“系统配置 → 音乐会员登录”；管理员 Cookie 写入数据库并使用 `TSBOT_COOKIE_KEY` 加密存储。
@@ -496,4 +503,4 @@ server {
 
 ## 语音预缓冲
 
-解码后的 PCM 只保存在有界通道内，每个 20 ms 播放周期消费一帧；通道满时阻塞读取，背压经管道传回 FFmpeg，不丢弃音频帧。Linux 缓冲为 50 帧（约 1 秒、192 KB PCM），Windows 为 200 帧（约 4 秒、768 KB PCM），另有单帧和 FFmpeg 内部缓冲。容量定义位于 `voice-service/src/pcm_buffer.rs`，不限制歌曲时长。短于预缓冲目标的音频在 EOF 时照常排空。相关 Rust 单元测试由 PR 检查运行。
+解码后的 PCM 只保存在有界通道内，每个 20 ms 播放周期消费一帧；通道满时阻塞读取，背压经管道传回 FFmpeg，不丢弃音频帧。Linux 和 Windows 均默认缓冲 250 帧（5 秒、约 960 KB PCM），可通过系统配置设置为 1–30 秒；该上限直接控制有界通道，另有单帧和 FFmpeg 内部缓冲，不是进程总内存上限。首次初始化可导入 `TSBOT_VOICE_PCM_BUFFER_SECONDS`，已有数据库设置优先；保存后需应用并重启 Voice。容量换算位于 `voice-service/src/pcm_buffer.rs`，不限制歌曲时长。短于预缓冲目标的音频在 EOF 时照常排空。相关 Rust 单元测试由 PR 检查运行。说明核验日期：2026-11-19；历史版本发布记录中的固定容量描述仅适用于对应发布版本。

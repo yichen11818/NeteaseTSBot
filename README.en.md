@@ -12,7 +12,7 @@ Listen together in your TeamSpeak channel. Search and queue **Netease Cloud Musi
 
 **v1.0.0 major update:** independent multi-server playback from one project and Web console, plus playback recovery, per-provider quality, TS6 levels and security fixes. [Full release notes and linked issues](docs/releases/v1.0.0.md).
 
-**Multiple servers, one project:** one Web console can manage independent TeamSpeak bots, each with its own queue, volume, channel, music accounts, administrator and persistent data. Copy `servers.example.json` to `servers.json`, run `python scripts/multi_server.py --init-env`, then build and start the generated Compose project from source. Use the Web server selector to switch bots. See the [operations guide](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器) for setup, migration and verification scope. The existing startup scripts remain single-server entry points.
+**Multiple servers, one project:** one Web console can manage independent TeamSpeak bots, each with its own queue, volume, channel, music accounts, administrator and persistent data. Copy `servers.example.json` to `servers.json`, run `python scripts/multi_server.py --init-env`, then build and start the generated Compose project from source. Use the Web server selector to switch bots. See the [operations guide](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器) for setup, migration and verification scope. The existing startup scripts remain single-server entry points. Generated services include health checks, restart-on-exit policies and log rotation. The shared Web gateway starts independently of instance health, so one unavailable instance cannot block the management entry point.
 
 [Get started](#start-with-prebuilt-docker-images) · [API reference](docs/API.md) · [Contribute](CONTRIBUTING.md) · [Report an issue](https://github.com/yichen11818/NeteaseTSBot/issues/new/choose) · [中文](README.md)
 
@@ -46,6 +46,10 @@ docker compose -f docker-compose.prebuilt.yml ps
 Netease features require your own `NeteaseCloudMusicApi` service. QQ Music and Bilibili adapters are built in. Some features require a platform login; playback depends on account permissions and platform restrictions.
 
 For troubleshooting, run `docker compose -f docker-compose.prebuilt.yml logs --tail=100 backend voice-service`. See [source installation](#quick-start-recommended) and [Docker options](#docker-deployment) for more detail.
+
+The **PCM prefetch limit (seconds)** setting is available under system settings → advanced → services and logs. It defaults to 5 seconds and accepts integers from 1 to 30. It bounds decoded audio held ahead of playback for every source; a full buffer makes the reader wait without discarding frames or limiting track duration. This limit controls the bounded reader channel itself, without an additional PCM queue; the decoder/process have their own overhead, so this is not a total process-memory limit.
+
+Save stages the change; Apply restarts Voice and interrupts active playback, following the existing Voice settings flow. `TSBOT_VOICE_PCM_BUFFER_SECONDS` seeds a new database setting or configures standalone Voice; existing persisted settings take precedence. Missing, non-integer or out-of-range standalone values fall back to 5 seconds. Unlimited buffering is not supported.
 
 ## Help build TSBot
 
@@ -391,6 +395,10 @@ The built-in adapter supports video search and audio playback, with local audio 
 
 ### Netease Cookie
 
+Personal account cookies are stored in the browser and scoped to each server in multi-server mode. The account page and liked songs use the same storage entry point. Legacy global cookies migrate once; existing scoped credentials take precedence, and reading, replacing or clearing an account retires stale global credentials so another server cannot inherit them.
+
+For `auto` quality, a `-460` risk-control response triggers one standard-quality attempt, then a legacy endpoint attempt at 320000 bps only if standard is also blocked. Explicit quality selections do not downgrade automatically; unrelated upstream errors retain accurate diagnostics. See [provider quality behavior](docs/MUSIC_QUALITY.md).
+
 Backend encrypts and stores the "admin Netease cookie" in database (`tsbot.db`) for:
 
 - getting more stable song URLs (avoid anonymous restrictions on some endpoints)
@@ -478,7 +486,8 @@ The acknowledgments below are based on commit, pull request, and issue history. 
 | [@yichen11818](https://github.com/yichen11818) | Project creation and maintenance, core features, deployment support, documentation, and community support. |
 | [@BreadAira](https://github.com/BreadAira) | Fixes for Netease cookie parsing, Bilibili covers, shared audio files and Chromium in Docker deployments ([PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9), [Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)). |
 | [@Marius128](https://github.com/Marius128) | Optional TeamSpeak user levels, Bilibili chat playback commands, and accompanying documentation and tests ([PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)). |
-| [@nitonitori](https://github.com/nitonitori) | Netease automatic quality fallback on risk-control errors, direct playlist ID imports, configurable playback recovery and cooldown, separate Netease and QQ Music quality defaults, and the backend Playwright image build fix ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), [#26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), [#31](https://github.com/yichen11818/NeteaseTSBot/pull/31), all merged). Thank you for the accompanying documentation, regression tests, and fixes addressing review findings. |
+| [@nitonitori](https://github.com/nitonitori) | Netease automatic quality fallback on risk-control errors, direct playlist ID imports, configurable playback recovery and cooldown, separate Netease and QQ Music quality defaults, configurable PCM prefetch with backpressure, and the backend Playwright image build fix ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), [#26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), [#29](https://github.com/yichen11818/NeteaseTSBot/pull/29), [#31](https://github.com/yichen11818/NeteaseTSBot/pull/31), all merged). Thank you for the accompanying documentation, regression tests, and fixes addressing review findings. |
+| [@ZhuMengMeng666](https://github.com/ZhuMengMeng666) | Per-server personal Netease cookie isolation, legacy bitrate fallback after automatic quality risk-control failures, and multi-server health checks, restart policies and log rotation ([PR #32](https://github.com/yichen11818/NeteaseTSBot/pull/32), [#33](https://github.com/yichen11818/NeteaseTSBot/pull/33), [#34](https://github.com/yichen11818/NeteaseTSBot/pull/34), all merged). Thank you for improving multi-server operation and maintenance. |
 
 ### Proposals, Reports, and Verification
 

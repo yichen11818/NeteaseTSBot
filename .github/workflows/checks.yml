@@ -27,6 +27,16 @@ jobs:
       - run: docker compose -f docker-compose.multi.json config --quiet
       - name: Validate generated Nginx configuration
         run: docker run --rm -v "$PWD/.multi-server:/etc/tsbot-multi:ro" nginx:1.30.2-alpine nginx -t -c /etc/tsbot-multi/nginx.conf
+      - name: Start the gateway while all backend instances are unavailable
+        run: |
+          docker compose -f docker-compose.multi.json build web
+          docker compose -f docker-compose.multi.json up -d --wait --wait-timeout 60 web
+          curl --fail http://127.0.0.1:8080/servers.json
+          curl --fail --output /dev/null http://127.0.0.1:8080/s/home/search
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/servers/home/health)" = "502"
+      - name: Stop the isolated gateway test
+        if: always()
+        run: docker compose -f docker-compose.multi.json down --volumes
 
   backend:
     name: Backend regression tests
@@ -63,7 +73,7 @@ jobs:
       - run: npm --prefix web run build:demo
 
   voice:
-    name: Voice protocol check
+    name: Voice protocol and buffering checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
