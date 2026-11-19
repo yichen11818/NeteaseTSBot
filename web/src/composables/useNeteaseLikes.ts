@@ -1,9 +1,9 @@
 import { ref } from 'vue'
 import { apiGet } from '../api'
 import { DEMO_MODE } from '../demoMode'
-import { serverStorageKey } from '../servers'
+import { readServerStorage, serverStorageKey } from '../servers'
 
-const USER_COOKIE_KEY = serverStorageKey('tsbot_user_netease_cookie')
+const USER_COOKIE_KEY = 'tsbot_user_netease_cookie'
 const LIKES_CACHE_KEY = serverStorageKey('tsbot_likes_cache')
 const CACHE_DURATION_MS = 150 * 60 * 1000
 const PAGE_SIZE = 200
@@ -20,7 +20,7 @@ function readCachedLikes(): any | null {
 async function requestLikes(offset: number, useCache: boolean): Promise<any> {
   const cached = useCache ? readCachedLikes() : null
   if (cached) return cached
-  const cookie = localStorage.getItem(USER_COOKIE_KEY) || ''
+  const cookie = readServerStorage(USER_COOKIE_KEY)
   if (!cookie && !DEMO_MODE) throw new Error('需要先设置网易云音乐 Cookie')
   const data = await apiGet<any>(`/netease/likes?offset=${offset}&limit=${PAGE_SIZE}`, { 'X-Netease-Cookie': cookie })
   if (offset === 0) localStorage.setItem(LIKES_CACHE_KEY, JSON.stringify({ data, timestamp: Date.now() }))

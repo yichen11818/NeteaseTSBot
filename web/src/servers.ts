@@ -36,7 +36,10 @@ export function serverStorageKey(key: string): string {
 export function readServerStorage(key: string): string {
   const scopedKey = serverStorageKey(key)
   const current = localStorage.getItem(scopedKey)
-  if (current !== null) return current
+  if (current !== null) {
+    if (scopedKey !== key) localStorage.removeItem(key)
+    return current
+  }
   if (scopedKey === key) return ''
 
   const legacy = localStorage.getItem(key)
@@ -47,11 +50,14 @@ export function readServerStorage(key: string): string {
 }
 
 export function writeServerStorage(key: string, value: string): void {
-  localStorage.setItem(serverStorageKey(key), value)
+  const scopedKey = serverStorageKey(key)
+  localStorage.setItem(scopedKey, value)
+  if (scopedKey !== key) localStorage.removeItem(key)
 }
 
 export function removeServerStorage(key: string): void {
   localStorage.removeItem(serverStorageKey(key))
+  localStorage.removeItem(key)
 }
 
 export function parseServerCatalog(value: unknown): readonly ServerEntry[] {
