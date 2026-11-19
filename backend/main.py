@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from dataclasses import dataclass, field
 import hashlib
 from html import unescape
 import hmac
@@ -23,6 +24,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .bilibili_cache import prune_audio_cache
+from .bilibili_errors import BilibiliPlaybackError, bilibili_fallback_error, bilibili_playback_error
 from .diagnostics import run_diagnostics
 from .bilibili_auth import (
     close_all_bilibili_qr_sessions,
@@ -60,9 +62,14 @@ from .managed_assets import ASSET_BY_KEY, asset_path, asset_payload, delete_asse
 from .netease import NeteaseClient
 from .netease_cookie import extract_netease_auth_cookie, has_netease_auth_cookie
 from .qqmusic import QQMusicClient
+from .qqmusic_login import QQMusicCookieSetRequest, create_qqmusic_login_router
 from .voice_client import VoiceClient, VoiceStatus
+from .music_quality import NETEASE_QUALITIES
+from .queue_quality import QQMUSIC_QUALITIES, encode_qqmusic_source, qqmusic_queue_quality, strip_qqmusic_source
 from .config import settings
 from .logger import logger
+from .playback_recovery import RecoveryPolicy
+from .queue_quality import QQMUSIC_QUALITIES, encode_qqmusic_source, qqmusic_queue_quality, strip_qqmusic_source
 
 app = FastAPI(title="tsbot-backend")
 _levels_task: asyncio.Task | None = None
@@ -82,9 +89,9 @@ voice = VoiceClient()
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BILIBILI_AUDIO_DIR = REPO_ROOT / "tmp" / "bilibili_audio"
-BILIBILI_AUDIO_CACHE_TTL_SECONDS = max(0, settings.bilibili_audio_cache_ttl_hours) * 3600
-BILIBILI_AUDIO_CACHE_MAX_BYTES = max(0, settings.bilibili_audio_cache_max_mb) * 1024 * 1024
-BILIBILI_AUDIO_PARTIAL_TTL_SECONDS = max(0, settings.bilibili_audio_partial_ttl_minutes) * 60
+SECONDS_PER_HOUR = 3600
+SECONDS_PER_MINUTE = 60
+BYTES_PER_MIB = 1024 * 1024
 _BILIBILI_VIDEO_ID_RE = re.compile(r"(BV[0-9A-Za-z]+|av\d+)", re.IGNORECASE)
 _BILIBILI_TAG_RE = re.compile(r"<[^>]+>")
 _BILIBILI_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -181,6 +188,11 @@ async def api_token_middleware(request: Request, call_next):
 _chat_task: asyncio.Task[None] | None = None
 _bilibili_chat_tasks: set[asyncio.Task] = set()
 _BILIBILI_CHAT_MAX_PENDING = 4
+_auto_play_retry_task: asyncio.Task[None] | None = None
+_recovery_wait = asyncio.sleep
+_recovery_state: dict[str, object] | None = None
+_deferred_queue_item_ids: set[int] = set()
+
 _current_queue_item_id: int | None = None
 _pending_queue_item_id: int | None = None
 _pending_play_request_generation: int | None = None
@@ -223,22 +235,24 @@ class AddQueueRequest(BaseModel):
 
 
 class AddNeteaseQueueRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     song_id: str
     title: str
     artist: str = ""
     album: str = ""
     duration_ms: int | None = None
     cover_url: str = ""
-    level: str = "auto"
+    level: str | None = None
     play_now: bool = False
 
 
 class AddQQMusicQueueRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     song_mid: str
     title: str
     artist: str = ""
     play_now: bool = False
-    quality: str = "320"
+    quality: str | None = None
     album_mid: str = ""
     duration_ms: int | None = None
 
@@ -289,8 +303,8 @@ class ExternalQueueRequest(BaseModel):
     album_mid: str = ""
     duration_ms: int | None = None
     cover_url: str = ""
-    level: str = "auto"
-    quality: str = "320"
+    level: str | None = None
+    quality: str | None = None
     play_now: bool = False
 
 
@@ -396,6 +410,9 @@ async def _shutdown() -> None:
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
     _bilibili_chat_tasks.clear()
+    retry_task = _cancel_auto_play_retry()
+    if retry_task is not None:
+        await asyncio.gather(retry_task, return_exceptions=True)
     await close_all_bilibili_qr_sessions()
     await voice.close()
 
@@ -547,6 +564,8 @@ async def _take_now_playing_if_match(*, source_url: str) -> int | None:
     global _current_artist, _current_album, _current_artwork_url
     src = (source_url or "").strip()
     async with _playback_lock:
+        if _paused_at is not None:
+            return None
         if not _current_queue_item_id:
             return None
         if not _current_source_url:
@@ -566,8 +585,31 @@ async def _take_now_playing_if_match(*, source_url: str) -> int | None:
         return item_id
 
 
+def _cancel_auto_play_retry() -> asyncio.Task[None] | None:
+    global _auto_play_retry_task, _recovery_state
+    task = _auto_play_retry_task
+    if task is not None and task is not asyncio.current_task():
+        _auto_play_retry_task = None
+        _recovery_state = None
+        task.cancel()
+        return task
+    return None
+
+
+def _recovery_status_payload() -> dict:
+    active = _auto_play_retry_task is not None and not _auto_play_retry_task.done()
+    return {**(_recovery_state or {}), "pending": True} if active else {"pending": False}
+
+
+def _recovery_target_item_id() -> int | None:
+    value = (_recovery_state or {}).get("target_id") if _recovery_status_payload()["pending"] else None
+    return int(value) if isinstance(value, int) else None
+
+
+
 async def _begin_play_request(item_id: int | None = None) -> int:
     global _play_request_generation, _pending_queue_item_id, _pending_play_request_generation
+    _cancel_auto_play_retry()
     async with _playback_lock:
         _play_request_generation += 1
         _pending_queue_item_id = item_id
@@ -575,13 +617,16 @@ async def _begin_play_request(item_id: int | None = None) -> int:
         return _play_request_generation
 
 
+
 async def _invalidate_play_requests() -> int:
     global _play_request_generation, _pending_queue_item_id, _pending_play_request_generation
+    _cancel_auto_play_retry()
     async with _playback_lock:
         _play_request_generation += 1
         _pending_queue_item_id = None
         _pending_play_request_generation = None
         return _play_request_generation
+
 
 
 async def _is_play_request_current(request_generation: int) -> bool:
@@ -784,13 +829,13 @@ async def _play_queue_item_internal(item_id: int, *, requested_by: str) -> bool:
             qqmusic.set_cookie(cookie)
             # QQ playback links expire. Refresh on every play/repeat, keeping
             # the quality encoded by the filename of existing queue entries.
-            quality = "m4a" if "/C400" in source_url else "128" if "/M500" in source_url else "320"
+            quality = qqmusic_queue_quality(source_url)
             playback_source_url = await qqmusic.get_music_url_simple(item.track_id.split(":", 1)[1], quality)
             if not await _is_play_request_current(play_request_generation):
                 return True
             if not playback_source_url:
                 raise HTTPException(status_code=404, detail="无法获取 QQ 音乐播放链接")
-            item.source_url = playback_source_url
+            item.source_url = encode_qqmusic_source(quality, playback_source_url)
             session.commit()
         else:
             item.source_url = playback_source_url
@@ -840,6 +885,7 @@ async def _start_resolved_queue_item(
 
 async def _delete_queue_item(item_id: int) -> None:
     global _shuffle_queue, _current_shuffle_index
+    _deferred_queue_item_ids.discard(item_id)
     
     session = new_session()
     try:
@@ -864,6 +910,7 @@ async def _delete_queue_item(item_id: int) -> None:
     _schedule_ts_description_update()
 
 
+
 async def _clear_queue_internal(session: Session) -> dict:
     global _shuffle_queue, _current_shuffle_index
 
@@ -873,6 +920,7 @@ async def _clear_queue_internal(session: Session) -> dict:
 
     _shuffle_queue = []
     _current_shuffle_index = -1
+    _deferred_queue_item_ids.clear()
     await _invalidate_play_requests()
     await _set_now_playing_queue_item(None)
 
@@ -885,6 +933,7 @@ async def _clear_queue_internal(session: Session) -> dict:
 
     _schedule_ts_description_update()
     return {"ok": True, "removed_count": removed_count, "playback_stopped": playback_stopped}
+
 
 
 # Alias for backward compatibility
@@ -929,38 +978,77 @@ def _select_next_queue_item(session: Session, *, cursor_id: int | None) -> int |
     return item_id
 
 
+@dataclass
+class _QueueRecovery:
+    preferred_item_id: int | None = None
+    failed_item_id: int | None = None
+    excluded_ids: set[int] = field(default_factory=set)
+    requested_by: str = "auto"
+    superseded: bool = False
+
+
+
 async def _auto_play_next_from_queue(
-    *, start_after_id: int | None = None, requested_by: str = "auto"
-) -> None:
+    *, start_after_id: int | None = None, requested_by: str = "auto",
+    recovery: _QueueRecovery | None = None,
+) -> bool:
+    if recovery is not None:
+        requested_by = recovery.requested_by
     cursor_id = start_after_id if start_after_id is not None else _current_queue_item_id
     attempted_ids: set[int] = set()
+    wrapped = False
     while True:
-        with new_session() as session:
-            item_id = _select_next_queue_item(session, cursor_id=cursor_id)
-        if item_id is None or item_id in attempted_ids:
-            return
+        if recovery is not None and recovery.preferred_item_id is not None:
+            item_id = recovery.preferred_item_id
+        else:
+            with new_session() as session:
+                item_id = _select_next_queue_item(session, cursor_id=cursor_id)
+        if item_id is None:
+            # A retained failed entry may be before the normal consuming cursor.
+            if _deferred_queue_item_ids and not wrapped:
+                cursor_id, wrapped = None, True
+                continue
+            return False
+        if item_id in attempted_ids:
+            return False
         attempted_ids.add(item_id)
+        if recovery is not None and item_id in recovery.excluded_ids:
+            recovery.preferred_item_id = None
+            cursor_id = item_id
+            continue
         generation_before_play = _play_request_generation
         try:
             if await _play_queue_item_internal(item_id, requested_by=requested_by):
-                return
-        except HTTPException as exc:
-            if exc.status_code not in (402, 403, 404, 410):
-                raise
+                return True
+        except (HTTPException, httpx.HTTPError) as exc:
             if _play_request_generation != generation_before_play + 1:
-                return
+                if recovery is not None:
+                    recovery.superseded = True
+                return False
+            if not isinstance(exc, HTTPException) or exc.status_code not in (402, 403, 404, 410):
+                if recovery is not None:
+                    recovery.failed_item_id = item_id
+                    recovery.preferred_item_id = item_id
+                raise
             await _delete_queue_item(item_id)
             try:
                 await voice.send_notice(f"歌曲不可播放，已跳过并删除: #{item_id}", target_mode=2)
             except Exception:
                 pass
             if _play_request_generation != generation_before_play + 1:
-                return
+                if recovery is not None:
+                    recovery.superseded = True
+                return False
+        if recovery is not None:
+            recovery.preferred_item_id = None
         cursor_id = item_id
+
 
 
 def _serialize_queue_item(row: QueueItem) -> dict:
     source_url = _strip_netease_queue_meta(row.source_url) if row.track_id.startswith("netease:") else row.source_url
+    if row.track_id.startswith("qqmusic:"):
+        source_url = strip_qqmusic_source(str(row.source_url or ""))
     track_ref = _build_track_reference(str(row.track_id or ""))
     return {
         "id": row.id,
@@ -1058,6 +1146,22 @@ def _normalize_netease_quality_level(value: object, *, default: str = "auto", st
         supported = ", ".join(("auto",) + _NETEASE_QUALITY_LEVELS)
         raise HTTPException(status_code=400, detail=f"invalid netease level, supported: {supported}")
     return default
+
+
+def _resolve_enqueue_quality(provider: str, value: str | None) -> str:
+    if value is None:
+        value = settings.netease_default_quality if provider == "netease" else settings.qqmusic_default_quality
+    raw = str(value).strip().lower()
+    if provider == "netease" and raw:
+        return _normalize_netease_quality_level(raw, strict=True)
+    if provider == "qqmusic" and raw in QQMUSIC_QUALITIES:
+        return raw
+    raise HTTPException(status_code=400, detail=f"invalid {provider} requested quality")
+
+
+def _validate_quality_fields(provider: str, level: str | None, quality: str | None) -> None:
+    if (provider != "netease" and level is not None) or (provider != "qqmusic" and quality is not None):
+        raise HTTPException(status_code=400, detail="quality field does not match the requested source")
 
 
 def _resolve_netease_request_level(level: str) -> str:
@@ -1552,19 +1656,19 @@ def _request_bilibili_api_sync(
             resp = client.get(f"https://api.bilibili.com{path}", params=params)
             resp.raise_for_status()
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"bilibili api request failed: path={path} error={exc}") from exc
+        raise bilibili_playback_error(exc, detail=f"bilibili api request failed: path={path}") from exc
 
     try:
         payload = resp.json()
     except ValueError as exc:
-        raise HTTPException(status_code=502, detail=f"bilibili api returned invalid json: path={path}") from exc
+        raise BilibiliPlaybackError(detail=f"bilibili api returned invalid json: path={path}") from exc
 
     if int(payload.get("code") or 0) != 0:
-        raise HTTPException(status_code=502, detail=f"bilibili api failed: path={path} code={payload.get('code')}")
+        raise BilibiliPlaybackError(detail=f"bilibili api failed: path={path} code={payload.get('code')}")
 
     data = payload.get("data")
     if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail=f"bilibili api returned invalid data: path={path}")
+        raise BilibiliPlaybackError(detail=f"bilibili api returned invalid data: path={path}")
     return data
 
 
@@ -2045,7 +2149,7 @@ def _extract_bilibili_playurl_download_target(playurl_data: dict) -> tuple[str, 
             if backup:
                 return backup, ".mp4"
 
-    raise HTTPException(status_code=502, detail="bilibili playurl returned no downloadable media url")
+    raise BilibiliPlaybackError(detail="bilibili playurl returned no downloadable media url")
 
 
 async def _bilibili_search_videos(*, keywords: str, limit: int = 20, page: int = 1) -> dict:
@@ -2125,9 +2229,9 @@ def _find_cached_bilibili_audio(video_id: str) -> str:
     requested_paths = set(BILIBILI_AUDIO_DIR.glob(f"{video_id}.*"))
     prune_result = prune_audio_cache(
         BILIBILI_AUDIO_DIR,
-        max_bytes=BILIBILI_AUDIO_CACHE_MAX_BYTES,
-        ttl_seconds=BILIBILI_AUDIO_CACHE_TTL_SECONDS,
-        partial_ttl_seconds=BILIBILI_AUDIO_PARTIAL_TTL_SECONDS,
+        max_bytes=settings.bilibili_audio_cache_max_mb * BYTES_PER_MIB,
+        ttl_seconds=settings.bilibili_audio_cache_ttl_hours * SECONDS_PER_HOUR,
+        partial_ttl_seconds=settings.bilibili_audio_partial_ttl_minutes * SECONDS_PER_MINUTE,
         protected_paths=requested_paths,
     )
     if prune_result.removed_files:
@@ -2190,13 +2294,16 @@ def _extract_bilibili_video_info_sync(video_id: str) -> dict:
         "noplaylist": True,
         "http_headers": _BILIBILI_DEFAULT_HEADERS,
     }
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        raise bilibili_fallback_error(api_error, exc) from exc
     normalized = _normalize_bilibili_video_info(info, fallback_video_id=normalized_video_id)
     if normalized is None:
         if api_error is not None:
-            raise RuntimeError(f"failed to parse bilibili metadata via api ({api_error}) and yt-dlp fallback")
-        raise RuntimeError("failed to parse bilibili metadata")
+            raise BilibiliPlaybackError(detail="failed to parse bilibili metadata via api and yt-dlp fallback")
+        raise BilibiliPlaybackError(detail="failed to parse bilibili metadata")
     return normalized
 
 
@@ -2210,10 +2317,10 @@ async def _extract_bilibili_video_info(video_id: str) -> dict:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"failed to resolve bilibili video: {exc}") from exc
+        raise bilibili_playback_error(exc, detail="failed to resolve bilibili video") from exc
 
     if not isinstance(normalized, dict):
-        raise HTTPException(status_code=502, detail="failed to parse bilibili video metadata")
+        raise BilibiliPlaybackError(detail="failed to parse bilibili video metadata")
     return normalized
 
 
@@ -2230,7 +2337,7 @@ def _download_bilibili_audio_sync(video_id: str) -> tuple[str, dict | None]:
         metadata = _normalize_bilibili_view_data(view_data, fallback_video_id=normalized_video_id)
         cid = _resolve_bilibili_primary_cid(view_data)
         if cid is None:
-            raise HTTPException(status_code=502, detail="bilibili view api returned no cid")
+            raise BilibiliPlaybackError(detail="bilibili view api returned no cid")
 
         playurl_data = _fetch_bilibili_playurl_sync(normalized_video_id, cid, dash=True)
         download_url, suffix = _extract_bilibili_playurl_download_target(playurl_data)
@@ -2270,9 +2377,7 @@ def _download_bilibili_audio_sync(video_id: str) -> tuple[str, dict | None]:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(url, download=True)
     except Exception as exc:
-        if api_error is not None:
-            raise RuntimeError(f"bilibili api download failed ({api_error}); yt-dlp fallback failed ({exc})") from exc
-        raise
+        raise bilibili_fallback_error(api_error, exc) from exc
 
     filepath = _find_cached_bilibili_audio(normalized_video_id)
     normalized = _normalize_bilibili_video_info(info, fallback_video_id=normalized_video_id)
@@ -2295,10 +2400,10 @@ async def _download_bilibili_audio(video_id: str) -> tuple[str, dict | None]:
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"failed to download bilibili audio: {exc}") from exc
+            raise bilibili_playback_error(exc, detail="failed to download bilibili audio") from exc
 
         if not filepath:
-            raise HTTPException(status_code=502, detail="failed to locate downloaded bilibili audio")
+            raise BilibiliPlaybackError(detail="failed to locate downloaded bilibili audio")
         return filepath, metadata
 
 
@@ -2413,6 +2518,8 @@ async def voice_status() -> dict:
         "is_shuffled": _shuffle_enabled,
         "repeat_mode": _repeat_mode,
         "voice_connected": voice_connected,
+        "recovery_pending": _auto_play_retry_task is not None and not _auto_play_retry_task.done(),
+        "recovery": _recovery_status_payload(),
         "voice_config_revision": st.config_revision,
         "teamspeak_connected": getattr(st, "teamspeak_connected", None),
     }
@@ -2482,9 +2589,11 @@ async def voice_play() -> dict:
         current_item_id = _current_queue_item_id
     if has_pending_request:
         return {"ok": True, "action": "pending"}
+    if _recovery_status_payload()["pending"]:
+        return {"ok": True, "action": "recovery_pending"}
     if cur in ("STATE_IDLE", "STATE_ERROR") or current_item_id is None:
-        if current_item_id is None or not await _play_queue_item_internal(current_item_id, requested_by="play"):
-            await _auto_play_next_from_queue()
+        await _continue_auto_play(None, repeat_finished=False,
+            preferred_item_id=current_item_id, report_initial_error=True, requested_by="play")
         return {"ok": True, "action": "play_next"}
     if cur == "STATE_PAUSED":
         await voice.resume()
@@ -2493,17 +2602,43 @@ async def voice_play() -> dict:
     return {"ok": True, "action": "noop"}
 
 
+
 @app.post("/voice/pause")
 async def voice_pause() -> dict:
-    await voice.pause()
+    global _paused_at
+    async with _playback_lock:
+        previous_paused_at = _paused_at
+        item_id = _current_queue_item_id
     await _mark_playback_paused()
+    generation = await _invalidate_play_requests()
+    try:
+        await voice.pause()
+    except Exception:
+        async with _playback_lock:
+            if generation == _play_request_generation and item_id == _current_queue_item_id:
+                _paused_at = previous_paused_at
+        raise
     return {"ok": True}
+
+
+@app.post("/voice/stop")
+async def voice_stop() -> dict:
+    retry_task = _auto_play_retry_task
+    generation = await _invalidate_play_requests()
+    if retry_task is not None and retry_task is not asyncio.current_task():
+        await asyncio.gather(retry_task, return_exceptions=True)
+    if not await _is_play_request_current(generation):
+        return {"ok": True, "action": "superseded"}
+    await _set_now_playing_queue_item(None)
+    await voice.stop()
+    return {"ok": True}
+
 
 
 @app.post("/voice/next")
 async def voice_next() -> dict:
     async with _playback_lock:
-        active_item_id = _pending_queue_item_id or _current_queue_item_id
+        active_item_id = _pending_queue_item_id or _current_queue_item_id or _recovery_target_item_id()
     request_generation = await _invalidate_play_requests()
     if active_item_id and _repeat_mode == "none":
         await _remove_queue_item_internal(active_item_id)
@@ -2511,8 +2646,9 @@ async def voice_next() -> dict:
     await voice.skip()
     if not await _is_play_request_current(request_generation):
         return {"ok": True, "action": "superseded"}
-    await _auto_play_next_from_queue(start_after_id=active_item_id, requested_by="next")
+    await _continue_auto_play(active_item_id, repeat_finished=False, report_initial_error=True, requested_by="next")
     return {"ok": True, "action": "next"}
+
 
 
 @app.post("/voice/skip")
@@ -2525,7 +2661,7 @@ async def voice_skip() -> dict:
         current_item_id = _current_queue_item_id
         pending_item_id = _pending_queue_item_id
 
-    active_item_id = pending_item_id or current_item_id
+    active_item_id = pending_item_id or current_item_id or _recovery_target_item_id()
     request_generation = await _invalidate_play_requests()
     
     if active_item_id:
@@ -2539,10 +2675,11 @@ async def voice_skip() -> dict:
             return {"ok": True, "action": "superseded"}
         
         # Auto play next song
-        await _auto_play_next_from_queue(start_after_id=active_item_id)
+        await _continue_auto_play(active_item_id, repeat_finished=False, report_initial_error=True)
         return {"ok": True, "action": "skipped_and_next", "removed_track_id": active_item_id}
     else:
         return {"ok": True, "action": "no_current_track", "message": "当前没有正在播放的歌曲"}
+
 
 
 @app.post("/voice/previous")
@@ -3342,6 +3479,23 @@ def _get_ts_playlist_results(key: str) -> list[dict[str, str]]:
     return playlists
 
 
+async def _recover_failed_enqueue(
+    session: Session, *, item: QueueItem | None, fallback: QueueItem,
+    request_generation: int | None, requested_by: str, error: Exception,
+) -> None:
+    if request_generation is None or not await _is_play_request_current(request_generation):
+        return
+    if item is None:
+        item = fallback
+        session.add(item)
+        session.commit()
+        _schedule_ts_description_update()
+    await _clear_pending_play_request(request_generation=request_generation)
+    if await _is_play_request_current(request_generation):
+        await _continue_auto_play(None, repeat_finished=False, preferred_item_id=int(item.id),
+            initial_failure=error, requested_by=requested_by)
+
+
 async def _enqueue_netease_song(
     *,
     song_id: str,
@@ -3352,12 +3506,13 @@ async def _enqueue_netease_song(
     album: str = "",
     duration_ms: int | None = None,
     artwork_url: str = "",
-    quality_level: str = "auto",
+    quality_level: str | None = None,
 ) -> tuple[int, bool]:
+    item: QueueItem | None = None
     session = new_session()
     play_request_generation: int | None = None
     try:
-        normalized_level = _normalize_netease_quality_level(quality_level, strict=True)
+        normalized_level = _resolve_enqueue_quality("netease", quality_level)
         if not play_now:
             item = QueueItem(
                 track_id=f"netease:{song_id}",
@@ -3409,10 +3564,17 @@ async def _enqueue_netease_song(
         )
 
         return int(item.id), trial
+    except (HTTPException, httpx.HTTPError) as exc:
+        if _is_transient_playback_error(exc):
+            await _recover_failed_enqueue(session, item=item, fallback=QueueItem(track_id=f"netease:{song_id}", title=title, artist=artist, album=album,
+                    duration=duration_ms, cover_url=artwork_url, source_url=_encode_netease_queue_meta(normalized_level)),
+                request_generation=play_request_generation, requested_by=requested_by, error=exc)
+        raise
     finally:
         if play_request_generation is not None:
             await _clear_pending_play_request(request_generation=play_request_generation)
         session.close()
+
 
 
 async def _enqueue_qqmusic_song(
@@ -3422,14 +3584,17 @@ async def _enqueue_qqmusic_song(
     artist: str,
     play_now: bool,
     requested_by: str,
-    quality: str = "320",
+    quality: str | None = None,
     album_mid: str = "",
     duration_ms: int | None = None,
 ) -> tuple[int, bool]:
     """Enqueue a QQ Music song"""
+    quality = _resolve_enqueue_quality("qqmusic", quality)
     session = new_session()
     play_request_generation: int | None = None
+    item: QueueItem | None = None
     try:
+        quality = quality if quality in QQMUSIC_QUALITIES else "320"
         if play_now:
             play_request_generation = await _begin_play_request()
         # Use admin QQ Music cookie (server-side), like netease.
@@ -3455,7 +3620,7 @@ async def _enqueue_qqmusic_song(
             album="",  # QQ Music doesn't provide album info in basic API
             duration=resolved_duration_ms,
             cover_url=album_cover_url,
-            source_url=url,
+            source_url=encode_qqmusic_source(quality, url),
         )
         session.add(item)
         session.commit()
@@ -3469,6 +3634,13 @@ async def _enqueue_qqmusic_song(
             )
 
         return int(item.id), False  # QQ Music doesn't have trial mode
+    except (HTTPException, httpx.HTTPError) as exc:
+        if _is_transient_playback_error(exc):
+            await _recover_failed_enqueue(session, item=item, fallback=QueueItem(track_id=f"qqmusic:{song_mid}", title=title, artist=artist, album="",
+                    duration=duration_ms, cover_url=qqmusic.get_song_cover_image(album_mid) if album_mid else "",
+                    source_url=encode_qqmusic_source(quality)),
+                request_generation=play_request_generation, requested_by=requested_by, error=exc)
+        raise
     finally:
         if play_request_generation is not None:
             await _clear_pending_play_request(request_generation=play_request_generation)
@@ -3489,6 +3661,7 @@ async def _enqueue_bilibili_song(
 ) -> tuple[int, bool]:
     session = new_session()
     play_request_generation = request_generation if play_now else None
+    item: QueueItem | None = None
     try:
         normalized_video_id = _extract_bilibili_video_id(video_id)
         if not normalized_video_id:
@@ -3560,6 +3733,13 @@ async def _enqueue_bilibili_song(
         )
 
         return int(item.id), False
+    except (HTTPException, httpx.HTTPError) as exc:
+        if _is_transient_playback_error(exc):
+            await _recover_failed_enqueue(session, item=item, fallback=QueueItem(
+                track_id=f"bilibili:{normalized_video_id}", title=title, artist=artist, album=album,
+                duration=duration_ms, cover_url=artwork_url, source_url=""),
+                request_generation=play_request_generation, requested_by=requested_by, error=exc)
+        raise
     finally:
         if play_request_generation is not None:
             await _clear_pending_play_request(request_generation=play_request_generation)
@@ -3838,8 +4018,8 @@ async def _handle_chat_command(
                 try:
                     st = await voice.get_status()
                     cur = str(getattr(st, "state", "") or "").strip().upper()
-                    if cur == "STATE_IDLE":
-                        await _auto_play_next_from_queue()
+                    if cur == "STATE_IDLE" and not _recovery_status_payload()["pending"]:
+                        await _continue_auto_play(None, repeat_finished=False)
                 except Exception:
                     pass
             await reply(f"已切换为{mode}")
@@ -3924,7 +4104,6 @@ async def _handle_chat_command(
                         album=str(normalized.get("album") or ""),
                         duration_ms=normalized.get("duration_ms"),
                         artwork_url=str(normalized.get("artwork_url") or ""),
-                        quality_level="auto",
                     )
                     added += 1
                 except Exception:
@@ -3935,9 +4114,9 @@ async def _handle_chat_command(
                 try:
                     st = await voice.get_status()
                     cur = str(getattr(st, "state", "") or "").strip().upper()
-                    if cur == "STATE_IDLE":
-                        await _auto_play_next_from_queue()
-                        auto_started = True
+                    if cur == "STATE_IDLE" and not _recovery_status_payload()["pending"]:
+                        await _continue_auto_play(None, repeat_finished=False)
+                        auto_started = _current_queue_item_id is not None
                 except Exception:
                     pass
             label = playlist_name or selected_playlist.get("name") or playlist_id
@@ -3961,9 +4140,7 @@ async def _handle_chat_command(
             return
 
         if cmd == "stop":
-            await _invalidate_play_requests()
-            await _set_now_playing_queue_item(None)
-            await voice.stop()
+            await voice_stop()
             await reply("已停止")
             return
 
@@ -4115,10 +4292,8 @@ async def _handle_chat_command(
             if first_item_id is None:
                 await reply("播放队列为空")
                 return
-            ok = await _play_queue_item_internal(first_item_id, requested_by=invoker_name or "ts")
-            if not ok:
-                await reply("播放队列第一首歌曲失败，歌曲可能已被移除")
-                return
+            await _continue_auto_play(None, repeat_finished=False,
+                preferred_item_id=first_item_id, report_initial_error=True, requested_by=invoker_name or "ts")
             label = f"{first_title} - {first_artist}".strip(" -")
             await reply(f"已播放队列第一首: {label}")
             return
@@ -4159,7 +4334,6 @@ async def _handle_chat_command(
                 artist=artist,
                 play_now=(cmd == "play"),
                 requested_by=invoker_name,
-                quality_level="auto",
             )
             song_label = f"{title} - {artist}".strip(" -")
             extra = ""
@@ -4173,9 +4347,9 @@ async def _handle_chat_command(
             try:
                 st = await voice.get_status()
                 cur = str(getattr(st, "state", "") or "").strip().upper()
-                if cur == "STATE_IDLE":
-                    await _auto_play_next_from_queue()
-                    auto_started = True
+                if cur == "STATE_IDLE" and not _recovery_status_payload()["pending"]:
+                    await _continue_auto_play(None, repeat_finished=False)
+                    auto_started = _current_queue_item_id is not None
             except Exception as e:
                 await reply(f"已加入队列: #{item_id} {song_label} {extra}\n点歌: {invoker_name}\n自动播放失败: {e}")
                 return
@@ -4213,28 +4387,209 @@ async def _handle_playback_finished(source_url: str) -> None:
         return
     async with _playback_lock:
         has_pending_request = _pending_play_request_generation is not None
-    if has_pending_request:
+        has_recovery = _auto_play_retry_task is not None and not _auto_play_retry_task.done()
+    if has_pending_request or has_recovery:
         if _repeat_mode == "none":
             await _delete_queue_item(item_id)
         return
-    if _repeat_mode == "one":
+    await _continue_auto_play(item_id, repeat_finished=True)
+
+
+
+async def _auto_play_continuation_attempt(
+    item_id: int | None, *, repeat_finished: bool, recovery: _QueueRecovery,
+) -> bool:
+    if repeat_finished and _repeat_mode == "one" and item_id not in recovery.excluded_ids:
         generation_before_play = _play_request_generation
         try:
             if await _play_queue_item_internal(item_id, requested_by="auto"):
-                return
-        except HTTPException as exc:
-            if exc.status_code not in (402, 403, 404, 410):
-                raise
+                return True
+        except (HTTPException, httpx.HTTPError) as exc:
             if _play_request_generation != generation_before_play + 1:
-                return
+                recovery.superseded = True
+                return False
+            if not isinstance(exc, HTTPException) or exc.status_code not in (402, 403, 404, 410):
+                recovery.failed_item_id = item_id
+                recovery.preferred_item_id = item_id
+                raise
             await _delete_queue_item(item_id)
-        await _auto_play_next_from_queue(start_after_id=item_id)
+    elif repeat_finished and _repeat_mode == "none":
+        await _delete_queue_item(item_id)
+    return await _auto_play_next_from_queue(start_after_id=item_id, recovery=recovery)
+
+
+
+def _playback_recovery_reason(exc: Exception | None) -> str | None:
+    if isinstance(exc, BilibiliPlaybackError):
+        return exc.recovery_reason
+    if isinstance(exc, httpx.TimeoutException):
+        return "network_timeout"
+    if isinstance(exc, (httpx.UnsupportedProtocol, httpx.LocalProtocolError)):
+        return None
+    if isinstance(exc, httpx.RequestError):
+        return "network_error"
+    status = exc.status_code if isinstance(exc, HTTPException) else (
+        exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None)
+    if status == 429:
+        return "rate_limited"
+    if status in (502, 503, 504):
+        return "upstream_unavailable"
+    if isinstance(exc, httpx.HTTPStatusError) and status == 400:
+        try:
+            data = exc.response.json()
+        except ValueError:
+            return None
+        if isinstance(data, dict) and str(data.get("code")) == "-460":
+            return "upstream_risk"
+    return None
+
+
+def _is_transient_playback_error(exc: Exception) -> bool:
+    return _playback_recovery_reason(exc) is not None
+
+
+
+async def _continue_auto_play(
+    item_id: int | None, *, repeat_finished: bool, preferred_item_id: int | None = None,
+    report_initial_error: bool = False, initial_failure: Exception | None = None,
+    requested_by: str = "auto",
+) -> None:
+    global _auto_play_retry_task, _recovery_state
+    policy = RecoveryPolicy.snapshot(settings)
+    recovery = _QueueRecovery(preferred_item_id=preferred_item_id, requested_by=requested_by)
+    initial_error: Exception | None = initial_failure
+    if initial_failure is not None:
+        recovery.failed_item_id = preferred_item_id
+    try:
+        if initial_failure is None:
+            if preferred_item_id is not None and report_initial_error:
+                # Explicit selection must report its own first failure. Automatic
+                # traversal may remove unavailable entries and choose another.
+                recovery.failed_item_id = preferred_item_id
+                generation_before_play = _play_request_generation
+                try:
+                    played = await _play_queue_item_internal(preferred_item_id, requested_by=requested_by)
+                except (HTTPException, httpx.HTTPError) as exc:
+                    if _play_request_generation != generation_before_play + 1:
+                        raise HTTPException(status_code=409, detail="playback request was superseded by a newer command") from exc
+                    raise
+                if not played:
+                    raise HTTPException(status_code=404, detail="queue item not found")
+                return
+            else:
+                if await _auto_play_continuation_attempt(item_id, repeat_finished=repeat_finished, recovery=recovery):
+                    return
+                if recovery.superseded or not recovery.excluded_ids:
+                    return
+    except (HTTPException, httpx.HTTPError) as exc:
+        if not _is_transient_playback_error(exc):
+            raise
+        initial_error = exc
+
+    if not policy.enabled or not settings.playback_recovery_enabled:
+        if report_initial_error and initial_error is not None:
+            raise initial_error
+        logger.warning("播放源暂时不可用，自动恢复已关闭，队列保留")
         return
-    if _repeat_mode == "all":
-        await _auto_play_next_from_queue(start_after_id=item_id)
-        return
-    await _delete_queue_item(item_id)
-    await _auto_play_next_from_queue(start_after_id=item_id)
+
+    generation = _play_request_generation
+    allowed_current_item_id = _current_queue_item_id
+    _cancel_auto_play_retry()
+    _recovery_state = {
+        "target_id": recovery.failed_item_id, "attempt": 0, "retry_count": policy.retry_count,
+        "next_retry_at": None, "phase": "starting",
+        "last_reason": _playback_recovery_reason(initial_error),
+    }
+
+    async def retry() -> None:
+        global _auto_play_retry_task, _recovery_state
+        nonlocal generation
+        cursor_id, repeat_current = item_id, repeat_finished
+        failures: dict[int, int] = {}
+        failed_tracks = 0
+        pending_error = initial_error
+        try:
+            while True:
+                reset_pass = False
+                cooldown = False
+                failed_id = recovery.failed_item_id
+                if pending_error is not None and failed_id is not None:
+                    failures[failed_id] = failures.get(failed_id, 0) + 1
+                    count = failures[failed_id]
+                    if count <= policy.retry_count:
+                        delay = policy.retry_delay(count)
+                        logger.warning("歌曲 #%s 暂时失败，%.0f 秒后重试 (%d/%d)", failed_id, delay, count, policy.retry_count)
+                    elif policy.exhausted_action == "WAIT":
+                        delay = policy.cooldown_seconds
+                        cooldown = True
+                        failures[failed_id] = 0
+                    else:
+                        recovery.excluded_ids.add(failed_id)
+                        _deferred_queue_item_ids.add(failed_id)
+                        recovery.preferred_item_id = None
+                        cursor_id, repeat_current = failed_id, False
+                        failed_tracks += 1
+                        logger.warning("歌曲 #%s 连续失败，本轮暂时跳过，队列条目保留", failed_id)
+                        cooldown = failed_tracks >= policy.failed_tracks_before_cooldown
+                        delay = policy.cooldown_seconds if cooldown else 0
+                        if cooldown:
+                            with new_session() as session:
+                                remaining = session.execute(select(QueueItem.id).where(
+                                    QueueItem.id.not_in(recovery.excluded_ids)).limit(1)).scalar()
+                            reset_pass = remaining is None
+                else:
+                    delay = policy.cooldown_seconds
+                    reset_pass = True
+                    cooldown = True
+                if cooldown:
+                    logger.warning("播放暂时不可用，保留队列进入冷却，%.0f 秒后再试", delay)
+                _recovery_state = {
+                    "target_id": failed_id, "attempt": min(failures.get(failed_id, 0), policy.retry_count),
+                    "retry_count": policy.retry_count, "next_retry_at": time.time() + delay,
+                    "phase": "cooldown" if cooldown else "retry",
+                    "last_reason": _playback_recovery_reason(pending_error) or "upstream_unavailable",
+                }
+                await _recovery_wait(delay)
+                if not settings.playback_recovery_enabled:
+                    return
+                async with _playback_lock:
+                    if generation != _play_request_generation or (
+                        _current_queue_item_id is not None and _current_queue_item_id != allowed_current_item_id
+                    ) or _pending_play_request_generation is not None:
+                        return
+                if cooldown:
+                    failed_tracks = 0
+                if reset_pass:
+                    recovery.excluded_ids.clear()
+                    recovery.preferred_item_id = None
+                    failures.clear()
+                    cursor_id, repeat_current = None, False
+                recovery.failed_item_id = None
+                try:
+                    if await _auto_play_continuation_attempt(cursor_id, repeat_finished=repeat_current, recovery=recovery):
+                        return
+                    if recovery.superseded or not recovery.excluded_ids:
+                        return
+                    # Permanent failures also create play requests while walking
+                    # the queue. Keep our own intent increments for the next pass.
+                    generation = _play_request_generation
+                    pending_error = None
+                except (HTTPException, httpx.HTTPError) as exc:
+                    if not _is_transient_playback_error(exc):
+                        logger.warning("自动续播恢复遇到不可重试错误 (%s)，队列已保留", type(exc).__name__)
+                        return
+                    generation = _play_request_generation
+                    pending_error = exc
+        finally:
+            if _auto_play_retry_task is asyncio.current_task():
+                _auto_play_retry_task = None
+                _recovery_state = None
+
+    _auto_play_retry_task = asyncio.create_task(retry())
+    if report_initial_error and initial_error is not None:
+        raise initial_error
+
+
 
 
 async def _handle_playback_error(source_url: str) -> None:
@@ -4250,8 +4605,10 @@ async def _handle_playback_error(source_url: str) -> None:
     async with _playback_lock:
         has_pending_request = _pending_play_request_generation is not None
         has_current_track = _current_queue_item_id is not None
-    if not has_pending_request and not has_current_track and await _is_play_request_current(request_generation):
-        await _auto_play_next_from_queue(start_after_id=item_id)
+        has_recovery = _auto_play_retry_task is not None and not _auto_play_retry_task.done()
+    if not has_pending_request and not has_current_track and not has_recovery and await _is_play_request_current(request_generation):
+        await _continue_auto_play(item_id, repeat_finished=False)
+
 
 
 async def _chat_command_worker() -> None:
@@ -4327,6 +4684,10 @@ def public_config() -> dict:
         "app_name": settings.web_app_name,
         "app_icon": icon.public_path if asset_path(icon).is_file() else "",
         "log_level": settings.web_log_level,
+        "music_quality": {
+            "netease": {"default": _resolve_enqueue_quality("netease", None), "options": list(NETEASE_QUALITIES)},
+            "qqmusic": {"default": _resolve_enqueue_quality("qqmusic", None), "options": list(QQMUSIC_QUALITIES)},
+        },
     }
 
 
@@ -4452,17 +4813,15 @@ async def admin_update_settings(
     request: Request,
     session: Session = Depends(get_session),
 ) -> dict:
-    global BILIBILI_AUDIO_CACHE_TTL_SECONDS, BILIBILI_AUDIO_CACHE_MAX_BYTES
-    global BILIBILI_AUDIO_PARTIAL_TTL_SECONDS
-
     _, admin_session = require_admin(request, session)
     require_csrf(request, admin_session)
     effects = update_settings(session, req.values, apply=req.apply)
     if req.apply:
+        if not settings.playback_recovery_enabled:
+            retry_task = _cancel_auto_play_retry()
+            if retry_task is not None:
+                await asyncio.gather(retry_task, return_exceptions=True)
         netease._base = settings.netease_api_base.rstrip("/")
-        BILIBILI_AUDIO_CACHE_TTL_SECONDS = max(0, settings.bilibili_audio_cache_ttl_hours) * 3600
-        BILIBILI_AUDIO_CACHE_MAX_BYTES = max(0, settings.bilibili_audio_cache_max_mb) * 1024 * 1024
-        BILIBILI_AUDIO_PARTIAL_TTL_SECONDS = max(0, settings.bilibili_audio_partial_ttl_minutes) * 60
         if "backend.voice_grpc_addr" in req.values:
             await voice.close()
         if "voice" in effects and any(key.startswith("voice.description_") for key in req.values):
@@ -4890,12 +5249,14 @@ def delete_queue_item(item_id: int, session: Session = Depends(get_session)) -> 
 
 @app.post("/queue/{item_id}/play")
 async def play_queue_item(item_id: int, session: Session = Depends(get_session)) -> dict:
-    ok = await _play_queue_item_internal(item_id, requested_by="web")
-    if not ok:
+    if session.get(QueueItem, item_id) is None:
         raise HTTPException(status_code=404, detail="queue item not found")
+    await _continue_auto_play(None, repeat_finished=False,
+        preferred_item_id=item_id, report_initial_error=True, requested_by="web")
 
     _schedule_ts_description_update()
     return {"ok": True}
+
 
 
 @app.get("/history")
@@ -4909,10 +5270,14 @@ async def _replay_history_item(
     *,
     play_now: bool,
     requested_by: str,
+    level: str | None = None,
+    quality: str | None = None,
 ) -> dict:
     track_id = str(hist_item.track_id or "").strip()
     if not track_id:
         raise HTTPException(status_code=400, detail="history track_id is empty")
+
+    _validate_quality_fields(track_id.split(":", 1)[0], level, quality)
 
     if track_id.startswith("netease:"):
         song_id = track_id.split(":", 1)[1].strip()
@@ -4928,6 +5293,7 @@ async def _replay_history_item(
             album=hist_item.album,
             duration_ms=hist_item.duration,
             artwork_url=hist_item.cover_url,
+            quality_level=level,
         )
         return {
             "ok": True,
@@ -4984,7 +5350,7 @@ async def _replay_history_item(
             artist=str(hist_item.artist or ""),
             play_now=play_now,
             requested_by=requested_by,
-            quality="320",
+            quality=quality,
             album_mid="",
             duration_ms=hist_item.duration,
         )
@@ -5009,6 +5375,8 @@ async def _replay_history_item(
 async def replay_from_history(
     history_id: int,
     play_now: bool = True,
+    level: str | None = None,
+    quality: str | None = None,
     session: Session = Depends(get_session)
 ) -> dict:
     """Replay a track from history using its track_id to get a fresh playable source"""
@@ -5017,7 +5385,7 @@ async def replay_from_history(
         raise HTTPException(status_code=404, detail="History item not found")
 
     try:
-        return await _replay_history_item(hist_item, play_now=play_now, requested_by="web_history")
+        return await _replay_history_item(hist_item, play_now=play_now, requested_by="web_history", level=level, quality=quality)
     except HTTPException as e:
         if e.status_code in (402, 403):
             raise HTTPException(
@@ -5048,6 +5416,8 @@ async def external_player_action(req: ExternalPlayerActionRequest) -> dict:
         return await voice_play()
     if action == "pause":
         return await voice_pause()
+    if action == "stop":
+        return await voice_stop()
     if action == "next":
         return await voice_next()
     if action == "previous":
@@ -5127,6 +5497,7 @@ async def external_search(
 @app.post("/external/queue", tags=["External API"])
 async def external_add_queue(req: ExternalQueueRequest) -> dict:
     provider = (req.source or "netease").strip().lower()
+    _validate_quality_fields(provider, req.level, req.quality)
     keywords = (req.keywords or "").strip()
     play_now = bool(req.play_now)
 
@@ -5137,7 +5508,7 @@ async def external_add_queue(req: ExternalQueueRequest) -> dict:
         album = (req.album or "").strip()
         cover_url = (req.cover_url or "").strip()
         duration_ms = req.duration_ms
-        level = _normalize_netease_quality_level(req.level, strict=True)
+        level = _resolve_enqueue_quality("netease", req.level)
 
         if not song_id:
             if not keywords:
@@ -5269,7 +5640,7 @@ async def external_add_queue(req: ExternalQueueRequest) -> dict:
         album = (req.album or "").strip()
         album_mid = (req.album_mid or "").strip()
         duration_ms = req.duration_ms
-        quality = (req.quality or "320").strip() or "320"
+        quality = _resolve_enqueue_quality("qqmusic", req.quality)
         cover_url = (req.cover_url or "").strip()
 
         if not song_mid:
@@ -5359,12 +5730,14 @@ def external_history(session: Session = Depends(get_session)) -> dict:
 async def external_replay_history(
     history_id: int,
     play_now: bool = True,
+    level: str | None = None,
+    quality: str | None = None,
     session: Session = Depends(get_session),
 ) -> dict:
     hist_item = session.get(HistoryItem, history_id)
     if not hist_item:
         raise HTTPException(status_code=404, detail="History item not found")
-    return await _replay_history_item(hist_item, play_now=play_now, requested_by="external_history")
+    return await _replay_history_item(hist_item, play_now=play_now, requested_by="external_history", level=level, quality=quality)
 
 
 # 网易云音乐扩展功能 API
@@ -5632,33 +6005,6 @@ async def qqmusic_album_cover(album_mid: str) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# QQ Music Login endpoints
-
-@app.get("/qqmusic/login/qr/key")
-async def qqmusic_qr_key() -> dict:
-    """获取QQ音乐二维码登录密钥"""
-    try:
-        return await qqmusic.get_qr_key()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/qqmusic/login/qr/check")
-async def qqmusic_qr_check(qr_key: str, ptqrtoken: str, pt_login_sig: str = "") -> dict:
-    """检查QQ音乐二维码登录状态"""
-    try:
-        # Set the pt_login_sig in the client if provided
-        if pt_login_sig:
-            qqmusic._pt_login_sig = pt_login_sig
-        return await qqmusic.check_qr_status(qr_key, ptqrtoken)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class QQMusicCookieSetRequest(BaseModel):
-    cookie: str
-
-
 class QQMusicQRConfirmRequest(BaseModel):
     auth_url: str
 
@@ -5698,12 +6044,11 @@ async def admin_qqmusic_qr_confirm(
     _require_admin_token(request)
     r = await qqmusic.confirm_qr_login(req.auth_url)
     c = (qqmusic.get_cookie() or "").strip()
-    print(f"[DEBUG] QR confirm - new cookie length: {len(c)}, preview: {c[:200]}...")
     if c:
         _set_secret(session, "qqmusic_cookie", c)
-        print(f"[DEBUG] QR confirm - cookie saved to database")
+        logger.info("QQ Music QR login cookie saved")
     else:
-        print(f"[DEBUG] QR confirm - no cookie to save")
+        logger.warning("QQ Music QR confirmation returned no cookie")
     return {"ok": True, "admin_cookie_set": bool(c), "uin": qqmusic.get_uin(), "raw": r}
 
 
@@ -5812,34 +6157,6 @@ async def admin_bilibili_qr_check(
     }
 
 
-@app.post("/qqmusic/login/cookie")
-async def qqmusic_set_cookie(req: QQMusicCookieSetRequest) -> dict:
-    """设置QQ音乐Cookie"""
-    try:
-        qqmusic.set_cookie(req.cookie)
-        return {"success": True, "message": "Cookie设置成功", "uin": qqmusic.get_uin()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/qqmusic/login/status")
-async def qqmusic_login_status() -> dict:
-    """获取QQ音乐登录状态"""
-    try:
-        if not qqmusic.get_cookie():
-            return {"logged_in": False, "message": "未设置Cookie"}
-        
-        refresh_result = await qqmusic.refresh_login()
-        return {
-            "logged_in": refresh_result["success"],
-            "message": refresh_result["message"],
-            "uin": qqmusic.get_uin(),
-            "cookie": qqmusic.get_cookie()
-        }
-    except Exception as e:
-        return {"logged_in": False, "message": str(e)}
-
-
 @app.get("/qqmusic/user/info")
 async def qqmusic_user_info() -> dict:
     """获取QQ音乐用户信息"""
@@ -5858,10 +6175,4 @@ async def qqmusic_user_playlists() -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/qqmusic/login/refresh")
-async def qqmusic_refresh_login() -> dict:
-    """刷新QQ音乐登录状态"""
-    try:
-        return await qqmusic.refresh_login()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+app.include_router(create_qqmusic_login_router(qqmusic, _require_admin_token))

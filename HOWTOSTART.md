@@ -191,6 +191,8 @@ npm.cmd --prefix web run dev
 
 ## Docker 运行
 
+此节是仓库默认部署网络的现行运维入口，配置核验日期：2026-11-14。核验范围为仓库 Compose、启动脚本及配置示例；未核验远程测试、生产或灾备主机，也未修改任何已运行容器。源码开发的三个进程默认通过本机回环地址通信；Docker 中的后端通过 `voice-service:50051` 访问语音服务。
+
 项目根目录已提供：
 
 - `docker-compose.yml`
@@ -229,9 +231,18 @@ docker compose down
 
 默认端口映射：
 
-- `50051:50051`（voice-service gRPC）
 - `8009:8009`（backend）
 - `8080:8080`（web，Nginx 托管生产前端产物，并将 `/api/*` 反向代理到 backend）
+
+语音服务的 gRPC 没有应用层认证，因此三个默认 Compose 文件均不发布其宿主机端口。容器内仍监听 `50051`，不影响后端播放控制。升级后重新执行所用 Compose 的 `up -d` 才会移除旧容器的端口映射；只更新文件不会改变正在运行的服务。
+
+本地开发需要从宿主机调试容器内 gRPC 时，可显式加入调试配置（仅绑定 `127.0.0.1`）：
+
+```bash
+docker compose -f docker-compose.prebuilt.yml -f docker-compose.voice-debug.yml up -d
+```
+
+源码构建使用 `docker-compose.yml` 替换上面的首个文件；离线镜像使用 `docker-compose.portable.yml`。结束调试后不带调试文件重新执行 `up -d`。跨主机部署不属于默认拓扑；不要直接把未认证的 gRPC 发布到公网。
 
 ### 5. 使用预构建镜像（Docker Hub / GHCR）
 
@@ -255,6 +266,73 @@ docker compose -f docker-compose.prebuilt.yml up -d
 - GitHub **Packages** 页面显示的是 GHCR 包；如果只推 Docker Hub，这里会是空的。
 - 现在看到 `backend` / `web` / `voice-service` 三个镜像仓库是正常的，因为当前发布策略就是按三个服务分别构建。
 - GitHub **Releases** 页面里的 `tar.gz` 与 `SHA256SUMS.txt` 是软件包归档，不是 Docker 镜像。
+- 自 v1.0.0 起，Linux amd64 发布包包含完整的 Git 跟踪源码、Dockerfiles、`scripts/`、`servers.example.json` 与文档，以及 `bin/voice-service` 和 `web/dist/` 构建产物。解压后可使用下方的多服务器生成命令；多服务器 Compose 仍从包内源码构建镜像。原有启动脚本仍采用源码构建流程，若使用附带的 Voice 二进制，应在包根目录、加载原 `tsbot.env` 后显式运行 `./bin/voice-service 127.0.0.1:50051`。构建产物不包含个人环境文件、数据库或实例数据。
+
+## 一个项目连接多个 TeamSpeak 服务器
+
+配置核验日期：2026-11-17。多服务器模式使用一个 Web 入口，每台 TeamSpeak 服务器对应一组独立的 backend / voice 容器；三种镜像各构建一次，各组复用镜像。队列、历史、音量、频道、机器人身份、音乐账号、管理员账号和配置分别保存。网页顶部可以切换服务器；不同标签页可以同时管理不同服务器。切换网页不会停止任何服务器的播放。
+
+这是 Docker Compose 的独立部署模式。原来的 Compose、`run-*.sh`、`run-*.ps1` 和 `nohup-*` 仍用于单服务器。以下步骤只配置本地源码及部署文件，不代表已修改远程测试、生产或灾备环境。
+
+### 首次创建
+
+需要 Python 3.10+（生成器只使用标准库）、Docker Engine 和 Docker Compose v2。在项目根目录执行；Windows 使用 `Copy-Item` 代替 `cp`：
+
+```bash
+cp servers.example.json servers.json
+# 编辑 servers.json，为每台服务器设置稳定的 id 和显示名称 name
+python scripts/multi_server.py --init-env
+docker compose -f docker-compose.multi.json config --quiet
+docker compose -f docker-compose.multi.json up -d --build
+```
+
+`servers.json` 只接受 `web_port` 和 `servers`。每个服务器条目只接受 `id`、`name`，不在这里存放地址、Cookie 或密码。`id` 使用小写字母、数字及单个连字符，以字母开头、字母或数字结尾；加上 `backend-` 后不能超过 DNS 标签的 63 字符限制。`id` 是数据目录与服务名的一部分，创建后保持稳定；更改展示名称只改 `name`。
+
+生成器创建以下本地文件，均已加入 Git 和 Docker 构建上下文的忽略规则：
+
+| 文件或目录 | 用途 |
+| --- | --- |
+| `docker-compose.multi.json` | Compose 可直接读取的 JSON 配置；固定项目名 `tsbot-multi` |
+| `.multi-server/` | Nginx 网关配置及只包含 ID、名称的公开服务器清单 |
+| `instances/<id>/tsbot.env` | 每台服务器的启动配置与独立随机加密密钥 |
+| `instances/<id>/data/` | SQLite 数据库、上传资源及等级系统数据 |
+| `instances/<id>/logs/` | 日志、初始管理员密码、身份及 Voice 配置/状态文件 |
+
+`--init-env` 只创建缺少的环境文件，不覆盖现有密钥、数据库或配置。不加此选项时，缺少环境文件会明确报错。生成器不会删除被移出清单的服务器数据。
+
+打开 `http://<部署主机>:8080`（端口可通过 `web_port` 修改），网页进入清单中的第一台服务器。也可以直接访问 `/s/home/search`、`/s/friends/search`。各服务器的 `admin` 初始密码位于 `instances/<id>/logs/initial-admin-password.txt`，分别登录并修改密码，然后在当前服务器的“系统配置”填写 TeamSpeak 地址、频道和音乐平台账号。
+
+默认只有 Web 发布宿主机端口；backend 和 voice 仅连接该组的 Docker 网络，Web 网关接入所有组。后端分别使用 `voice-<id>:50051`，不发布 gRPC。每组的临时音频卷、数据目录及网络都独立。容器内数据库与共享配置路径由生成器固定，避免旧环境文件把两个实例指向同一数据位置。
+
+登录 Cookie 同时按名称和 `/api/servers/<id>/` 路径隔离。API、头像上传、播放控制均走当前服务器；外部集成示例为 `/api/servers/home/external/status`，使用 home 自己配置的 Token。不存在的服务器返回错误，不会改为控制第一台服务器。名称清单为公开信息，不应把敏感内容写入 `name`。
+
+浏览器里的本地收藏、搜索历史和主题仍是个人偏好，可以跨服务器使用；音乐账号 Cookie 缓存、“我喜欢的”缓存及音质偏好按服务器区分。此次不增加统一管理员账号或跨服务器同步播放。
+
+### 增加、改名与停止服务器
+
+增加服务器时编辑 `servers.json`，再次生成并启动；修改 `name` 也要重新生成。网关需要重建容器以加载新的路由：
+
+```bash
+python scripts/multi_server.py --init-env
+docker compose -f docker-compose.multi.json up -d --build
+docker compose -f docker-compose.multi.json up -d --force-recreate web
+docker compose -f docker-compose.multi.json ps
+docker compose -f docker-compose.multi.json logs --tail=100 backend-home voice-home
+```
+
+修改 TeamSpeak 地址、频道和音乐账号时直接使用对应服务器的 Web 设置页，不需要重新生成清单。后端的“Voice gRPC 地址”应保留为 `voice-<id>:50051`。
+
+只停止一组可执行 `docker compose -f docker-compose.multi.json stop backend-friends voice-friends`。永久移出清单前先停止这组，再编辑清单、生成配置及重建 Web；旧容器可在确认归属后用 Compose 清理孤立服务。数据目录和音频卷不会由生成器清理。停止整个项目使用 `docker compose -f docker-compose.multi.json down`；备份应同时包含服务器清单、各自的环境文件、data 和 logs 中的身份/状态文件。
+
+### 从已有单服务器部署迁入
+
+先停止旧实例并备份其数据库、`tsbot.env`、上传资源、日志中的身份和 Voice 状态。将原来的环境文件复制到 `instances/home/tsbot.env`，原 `data/` 与 `logs/` 分别复制到 `instances/home/` 下；源码模式使用根目录数据库时，将它复制为 `instances/home/data/tsbot.db`。必须保留原 `TSBOT_COOKIE_KEY`，不要用新生成的密钥替换旧数据的密钥。
+
+随后生成多服务器配置并启动。旧数据库中的设置优先于环境变量，因此首次进入 home 的 Web 设置后，要将保存的 Voice gRPC 地址改为 `voice-home:50051`，核对身份文件、播放状态等路径在容器中是否有效，并应用配置。其他服务器使用各自的新目录与新密钥。迁移前后不得让两组运行中的服务同时写同一数据库或身份文件。
+
+本地原有单服务器如果占用 `8080`，应先停止它或修改多服务器的 `web_port`。外层反向代理应把整个站点交给多服务器 Web 网关，不再把 `/api` 单独转发到旧的 `8009`。
+
+2026-11-17 本地验证覆盖生成器测试、前后端回归与构建，以及两个实际 FastAPI 进程经本机 Nginx 的队列、配置、登录/退出、Cookie 路径和 CSRF 隔离；Playwright 验证了服务器切换、登录和手机布局。本机 Nginx 为 1.21，验收时使用回环地址替换 Docker 上游并去掉新版动态 DNS 指令。本机没有 Docker；多服务器 Compose 配置及镜像对应的 Nginx 1.30.2 配置检查已在 [GitHub Actions](https://github.com/yichen11818/NeteaseTSBot/actions/runs/43911443404) 通过。尚未验收整套多服务器容器启动或真实 TeamSpeak 播放，配置检查通过不代表这些运行链路已经验证。
 
 ## 启动配置与 Web 系统配置
 
@@ -294,6 +372,7 @@ DATABASE_URL=sqlite:///./tsbot.db
 - 界面图标和 TeamSpeak 机器人头像在 Web 设置页直接上传，固定保存在数据库目录旁的 `uploads/` 中；不再填写服务器图片路径。
 - “保存配置”只将表单持久化到数据库；“应用配置”才会更新运行服务。应用 TeamSpeak 或 Voice 改动后，voice-service 会优雅断开并自动用新配置重启，Web 在新进程返回后提示“已重启成功”。
 - “TeamSpeak 配置”包含连接、频道、身份和客户端简介；“Voice 服务”包含后端到 Voice 的连接与 Voice 运行参数。
+- “高级设置 → 服务与日志”的 PCM 预缓冲上限默认 5 秒，支持整数 1–30 秒，直接限制有界读取通道；缓冲满时 FFmpeg 等待，不截断曲目。该值不包含解码器及进程自身开销。首次启动可由 `TSBOT_VOICE_PCM_BUFFER_SECONDS` 导入，已有数据库配置优先；独立 Voice 对无效值使用 5 秒默认值。保存后需应用，Voice 重启会中断播放。配置说明核验：2026-11-19（源码检查，不代表已更新在线部署）。
 - 旧部署的 `TSBOT_TS3_*` 等变量会在数据库缺少对应值时导入一次，迁移后可从环境文件删除。
 - QQ 音乐能力由后端内建提供，不需要额外部署独立的 QQ 音乐 API 服务。
 - 网易云、QQ 音乐和 B 站授权统一位于“系统配置 → 音乐会员登录”；管理员 Cookie 写入数据库并使用 `TSBOT_COOKIE_KEY` 加密存储。
@@ -415,3 +494,7 @@ server {
 - 查看 `TODO` 文件了解开发计划
 - 查看 `LICENSE` 文件了解许可证信息
 - 遇到问题请提交 Issue
+
+## 语音预缓冲
+
+解码后的 PCM 只保存在有界通道内，每个 20 ms 播放周期消费一帧；通道满时阻塞读取，背压经管道传回 FFmpeg，不丢弃音频帧。Linux 缓冲为 50 帧（约 1 秒、192 KB PCM），Windows 为 200 帧（约 4 秒、768 KB PCM），另有单帧和 FFmpeg 内部缓冲。容量定义位于 `voice-service/src/pcm_buffer.rs`，不限制歌曲时长。短于预缓冲目标的音频在 EOF 时照常排空。相关 Rust 单元测试由 PR 检查运行。

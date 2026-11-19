@@ -34,6 +34,9 @@ name: Docker Publish
       - 'voice-service/**'
       - 'proto/**'
       - 'vendor/**'
+      - 'scripts/**'
+      - 'servers.example.json'
+      - 'docs/releases/**'
   pull_request:
     paths:
       - '.github/workflows/docker-publish.yml'
@@ -62,6 +65,9 @@ name: Docker Publish
       - 'voice-service/**'
       - 'proto/**'
       - 'vendor/**'
+      - 'scripts/**'
+      - 'servers.example.json'
+      - 'docs/releases/**'
   workflow_dispatch:
 
 permissions:
@@ -220,16 +226,11 @@ jobs:
         run: |
           bundle_dir="$RUNNER_TEMP/${{ steps.pkg.outputs.bundle }}"
           mkdir -p "$bundle_dir/bin" "$bundle_dir/web"
-          rsync -a \
-            --exclude '.venv' \
-            --exclude '__pycache__' \
-            --exclude '*.pyc' \
-            backend/ "$bundle_dir/backend/"
-          rsync -a proto/ "$bundle_dir/proto/"
+          # Include tracked sources, Dockerfiles, multi-server tooling and docs.
+          # git archive excludes local credentials, databases and generated instances.
+          git archive HEAD | tar -x -C "$bundle_dir"
           rsync -a web/dist/ "$bundle_dir/web/dist/"
           install -m 755 voice-service/target/release/voice-service "$bundle_dir/bin/voice-service"
-          cp tsbot.env.example README.md README.en.md HOWTOSTART.md LICENSE docker-compose.yml docker-compose.prebuilt.yml "$bundle_dir/"
-          cp run-backend.sh run-web.sh run-voicemake.sh nohup-start.sh nohup-stop.sh nohup-status.sh "$bundle_dir/"
           mkdir -p dist
           tar -C "$RUNNER_TEMP" -czf "dist/${{ steps.pkg.outputs.archive }}" "${{ steps.pkg.outputs.bundle }}"
           (cd dist && sha256sum "${{ steps.pkg.outputs.archive }}" > SHA256SUMS.txt)
@@ -243,11 +244,26 @@ jobs:
             dist/SHA256SUMS.txt
           retention-days: 14
 
-      - name: Publish release assets
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'pull_request'
+    needs: [publish, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tsbot-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets and notes
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/${{ steps.pkg.outputs.archive }}
+            dist/*.tar.gz
             dist/SHA256SUMS.txt
-          generate_release_notes: true
+          body_path: docs/releases/${{ github.ref_name }}.md
+          fail_on_unmatched_files: true

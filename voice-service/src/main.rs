@@ -21,7 +21,14 @@ use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
 
 mod logger;
-mod pcm_buffer;
+mod playback;
+#[cfg(test)]
+mod pcm_playback_tests;
+
+use playback::PlaybackRequest;
+use voice_service::playback_status::SharedStatus;
+
+use voice_service::pcm_buffer::{max_frames_from_config, PcmBuffer, PcmFrame};
 
 use tsclientlib::{Connection, DisconnectOptions, Identity, StreamItem, Version};
 use tsproto_packets::packets::{AudioData, CodecType, Direction, Flags, OutAudio, OutCommand, OutPacket, PacketType};
@@ -42,19 +49,6 @@ use voicev1::voice_service_server::{VoiceService, VoiceServiceServer};
 static DIRECT_DESCRIPTION_UPDATE_WARNED: AtomicBool = AtomicBool::new(false);
 static CONFIG_RESTART_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TEAMSPEAK_CONNECTED: AtomicBool = AtomicBool::new(false);
-
-#[derive(Default)]
-struct SharedStatus {
-    state: i32,
-    now_playing_title: String,
-    now_playing_source_url: String,
-    volume_percent: i32,
-    fx_pan: f32,
-    fx_width: f32,
-    fx_swap_lr: bool,
-    fx_bass_db: f32,
-    fx_reverb_mix: f32,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -310,7 +304,7 @@ impl VoiceService for VoiceServiceImpl {
         req: Request<voicev1::PlayRequest>,
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
         let r = req.into_inner();
-        self.start_playback_internal(r.title, r.source_url, r.notice, 0.0, false)
+        self.start_playback_internal(PlaybackRequest { title: r.title, source_url: r.source_url, notice: r.notice, start_time_s: 0.0, paused: false })
             .await?;
 
         Ok(Response::new(voicev1::CommandResponse {
@@ -468,7 +462,7 @@ impl VoiceService for VoiceServiceImpl {
             }
         };
 
-        self.start_playback_internal(title, source_url, String::new(), target_time_s, paused)
+        self.start_playback_internal(PlaybackRequest { title, source_url, notice: String::new(), start_time_s: target_time_s, paused })
             .await?;
 
         Ok(Response::new(voicev1::CommandResponse {
@@ -482,13 +476,6 @@ impl VoiceService for VoiceServiceImpl {
         _req: Request<voicev1::Empty>,
     ) -> std::result::Result<Response<voicev1::CommandResponse>, Status> {
         self.stop_internal().await;
-
-        {
-            let mut st = self.status.lock().await;
-            st.state = 1; // STATE_IDLE
-            st.now_playing_title.clear();
-            st.now_playing_source_url.clear();
-        }
 
         // LogEvent.Level: INFO=2
         emit_log(&self.events_tx, 2, "stopped");
@@ -651,90 +638,6 @@ impl VoiceServiceImpl {
         Some((st.now_playing_title.clone(), source_url, paused))
     }
 
-    async fn start_playback_internal(
-        &self,
-        title: String,
-        source_url: String,
-        notice: String,
-        start_time_s: f64,
-        paused: bool,
-    ) -> std::result::Result<(), Status> {
-        if !notice.is_empty() {
-            let _ = self.ts3_notice_tx.try_send((2, notice));
-        }
-
-        self.stop_internal().await;
-
-        {
-            let mut st = self.status.lock().await;
-            st.now_playing_title = title.clone();
-            st.now_playing_source_url = source_url.clone();
-            st.state = if paused { 3 } else { 2 };
-        }
-
-        // PlaybackEvent.Type: STARTED=1
-        emit_playback(&self.events_tx, 1, title.clone(), source_url.clone(), "");
-
-        let (paused_tx, paused_rx) = watch::channel(paused);
-        let cancel = CancellationToken::new();
-
-        let status = self.status.clone();
-        let tx = self.ts3_audio_tx.clone();
-        let events_tx = self.events_tx.clone();
-        let title_for_event = title.clone();
-        let source_url_for_loop = source_url.clone();
-        let cancel_for_task = cancel.clone();
-
-        let handle = tokio::spawn(async move {
-            let r = playback_loop(
-                source_url_for_loop.clone(),
-                start_time_s,
-                tx,
-                paused_rx,
-                cancel_for_task.clone(),
-                status,
-            )
-            .await;
-            let was_cancelled = cancel_for_task.is_cancelled();
-            match r {
-                Ok(()) => {
-                    if !was_cancelled {
-                        // PlaybackEvent.Type: FINISHED=2
-                        emit_playback(&events_tx, 2, title_for_event, source_url_for_loop, "");
-                    }
-                }
-                Err(e) => {
-                    if was_cancelled {
-                        return;
-                    }
-                    error!(%e, "playback loop failed");
-                    // PlaybackEvent.Type: ERROR=3
-                    emit_playback(&events_tx, 3, title_for_event, source_url_for_loop, format!("{e}"));
-                }
-            }
-        });
-
-        let mut pb = self.playback.lock().await;
-        *pb = Some(PlaybackControl {
-            cancel,
-            paused_tx,
-            handle,
-        });
-        Ok(())
-    }
-
-    async fn stop_internal(&self) {
-        let mut pb = self.playback.lock().await;
-        if let Some(p) = pb.take() {
-            p.cancel.cancel();
-            let abort_handle = p.handle.abort_handle();
-            let join = p.handle;
-            let r = tokio::time::timeout(Duration::from_secs(2), join).await;
-            if r.is_err() {
-                abort_handle.abort();
-            }
-        }
-    }
 }
 
 fn get_env(key: &str, def: &str) -> String {
@@ -897,124 +800,6 @@ async fn serverquery_set_client_description(
 
     let _ = serverquery_exec(&mut reader, &mut write_half, "quit").await;
     Ok(())
-}
-
-#[cfg(test)]
-mod playback_tests {
-    use super::*;
-    use std::io::Write;
-
-    struct TestAudio(PathBuf);
-
-    impl Drop for TestAudio {
-        fn drop(&mut self) {
-            let _ = fs::remove_file(&self.0);
-        }
-    }
-
-    fn silent_wav(seconds: u32) -> TestAudio {
-        let path = env::temp_dir().join(format!("tsbot-pcm-{}-{}.wav", std::process::id(), now_unix_ms()));
-        let mut file = fs::File::create(&path).unwrap();
-        let data_bytes = seconds * 48_000 * 2 * 2;
-        file.write_all(b"RIFF").unwrap();
-        file.write_all(&(data_bytes + 36).to_le_bytes()).unwrap();
-        file.write_all(b"WAVEfmt ").unwrap();
-        file.write_all(&16u32.to_le_bytes()).unwrap();
-        file.write_all(&1u16.to_le_bytes()).unwrap();
-        file.write_all(&2u16.to_le_bytes()).unwrap();
-        file.write_all(&48_000u32.to_le_bytes()).unwrap();
-        file.write_all(&192_000u32.to_le_bytes()).unwrap();
-        file.write_all(&4u16.to_le_bytes()).unwrap();
-        file.write_all(&16u16.to_le_bytes()).unwrap();
-        file.write_all(b"data").unwrap();
-        file.write_all(&data_bytes.to_le_bytes()).unwrap();
-        file.set_len(44 + u64::from(data_bytes)).unwrap();
-        TestAudio(path)
-    }
-
-    #[tokio::test]
-    #[ignore = "requires ffmpeg and ten minutes of real-time playback"]
-    async fn ten_minute_playback_completes_with_bounded_pcm() {
-        let audio = silent_wav(600);
-        let (sender, mut receiver) = mpsc::channel(200);
-        let sink = tokio::spawn(async move {
-            let mut packets = 0usize;
-            while receiver.recv().await.is_some() {
-                packets += 1;
-            }
-            packets
-        });
-        let (_paused_sender, paused_receiver) = watch::channel(false);
-        let status = Arc::new(Mutex::new(SharedStatus {
-            volume_percent: 100,
-            ..Default::default()
-        }));
-        let started = Instant::now();
-        tokio::time::timeout(
-            Duration::from_secs(630),
-            playback_loop(
-                audio.0.to_string_lossy().into_owned(),
-                0.0,
-                sender,
-                paused_receiver,
-                CancellationToken::new(),
-                status,
-            ),
-        )
-        .await
-        .expect("ten-minute track timed out")
-        .expect("ten-minute track failed");
-        let packets = sink.await.unwrap();
-        assert!(started.elapsed() >= Duration::from_secs(600), "playback ended prematurely");
-        // 30,000 audio frames, the end-of-stream packet, and a small startup silence allowance.
-        assert!((30_001..=30_150).contains(&packets), "unexpected packet count: {packets}");
-        eprintln!("ten-minute playback completed: packets={packets}, elapsed={:?}", started.elapsed());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires ffmpeg and a 30-second real-time memory check"]
-    async fn long_track_memory_stays_bounded_and_stop_remains_responsive() {
-        fn rss_kib() -> u64 {
-            fs::read_to_string("/proc/self/status")
-                .unwrap()
-                .lines()
-                .find_map(|line| line.strip_prefix("VmRSS:").map(|v| v.split_whitespace().next().unwrap().parse().unwrap()))
-                .unwrap()
-        }
-        let audio = silent_wav(4105);
-        let (sender, mut receiver) = mpsc::channel(200);
-        let sink = tokio::spawn(async move {
-            while receiver.recv().await.is_some() {}
-        });
-        let (_paused_sender, paused_receiver) = watch::channel(false);
-        let cancel = CancellationToken::new();
-        let playback_cancel = cancel.clone();
-        let source = audio.0.to_string_lossy().into_owned();
-        let initial_rss = rss_kib();
-        let playback = tokio::spawn(playback_loop(
-            source,
-            0.0,
-            sender,
-            paused_receiver,
-            playback_cancel,
-            Arc::new(Mutex::new(SharedStatus::default())),
-        ));
-        let mut peak_rss = initial_rss;
-        for _ in 0..6 {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            assert!(!playback.is_finished(), "long track stopped before cancellation");
-            let rss = rss_kib();
-            peak_rss = peak_rss.max(rss);
-            eprintln!("long-track RSS: {rss} KiB");
-            assert!(rss <= initial_rss + 32 * 1024, "long track exceeded its PCM memory budget");
-        }
-        cancel.cancel();
-        tokio::time::timeout(Duration::from_secs(3), playback)
-            .await.expect("stop was blocked by the full PCM buffer")
-            .unwrap().unwrap();
-        sink.await.unwrap();
-        eprintln!("long-track stop passed: initial_rss={initial_rss} KiB, peak_rss={peak_rss} KiB");
-    }
 }
 
 async fn serverquery_exec(
@@ -1684,11 +1469,10 @@ async fn playback_loop(
 
     // Encode/send loop must keep a stable 20ms cadence to prevent TS3 jitter buffer underruns.
     // We decouple ffmpeg reads from the send cadence via a small PCM frame queue.
-    let pcm_channel_capacity: usize = if cfg!(windows) { 200 } else { 50 };
-    let pcm_buffer_max_frames = pcm_buffer::max_frames_from_config(
+    let max_frames = max_frames_from_config(
         env::var("TSBOT_VOICE_PCM_BUFFER_SECONDS").ok().as_deref(),
     );
-    let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(pcm_channel_capacity);
+    let (pcm_tx, mut pcm_buffer) = PcmBuffer::channel(max_frames);
 
     let encoder = Encoder::new(
         audiopus::SampleRate::Hz48000,
@@ -1746,16 +1530,6 @@ async fn playback_loop(
     let mut underruns_consecutive: u64 = 0;
     let mut logged_first_pcm = false;
 
-    let mut pcm_buf: VecDeque<Vec<u8>> = VecDeque::new();
-
-    let prebuffer_target: usize = if cfg!(windows) { 15 } else { 5 };
-    let late_frame_wait = if cfg!(windows) {
-        Duration::from_millis(8)
-    } else {
-        Duration::from_millis(3)
-    };
-    let mut prebuffering = true;
-
     let mut last_tick = Instant::now();
     let mut reset_tick_after_pause = false;
     let mut tick_jitter_max_ms: u128 = 0;
@@ -1794,19 +1568,13 @@ async fn playback_loop(
             _ = ticker.tick() => {}
         }
 
-        pcm_buffer::fill_pcm_buffer(&mut pcm_buf, &mut pcm_rx, frame_bytes, pcm_buffer_max_frames);
-
         if !logged_first_pcm {
-            if !pcm_buf.is_empty() {
+            if pcm_buffer.has_audio() {
                 logged_first_pcm = true;
                 info!(source_url = %source_url, first_pcm_ms = %playback_started.elapsed().as_millis(), "first pcm frame received");
             } else if playback_started.elapsed() >= Duration::from_secs(5) {
                 return Err(anyhow!("no pcm received from ffmpeg"));
             }
-        }
-
-        if prebuffering {
-            prebuffering = pcm_buf.len() < prebuffer_target;
         }
 
         let now = Instant::now();
@@ -1819,29 +1587,20 @@ async fn playback_loop(
 
         // Prefer real PCM frame; fall back to silence to keep cadence stable.
         // Allow a tiny wait to reduce false underruns when the PCM frame arrives slightly after the tick.
-        let mut got_real_frame = false;
-        if !prebuffering {
-            if let Some(frame) = pcm_buf.pop_front() {
-                if frame.len() == frame_bytes {
-                    pcm.copy_from_slice(&frame);
-                    got_real_frame = true;
-                }
-            } else {
-                match tokio::time::timeout(late_frame_wait, pcm_rx.recv()).await {
-                    Ok(Some(frame)) => {
-                        if frame.len() == frame_bytes {
-                            pcm.copy_from_slice(&frame);
-                            got_real_frame = true;
-                        }
-                    }
-                    Ok(None) => {
-                        // ffmpeg finished / failed. Stop playback.
-                        break;
-                    }
-                    Err(_) => {}
-                }
+        let got_real_frame = match pcm_buffer.next_frame().await {
+            PcmFrame::Audio(frame) => {
+                logged_first_pcm = true;
+                pcm.copy_from_slice(&frame);
+                true
             }
-        }
+            PcmFrame::Pending => false,
+            PcmFrame::Finished => {
+                if !logged_first_pcm {
+                    return Err(anyhow!("no pcm received from ffmpeg"));
+                }
+                break;
+            }
+        };
 
         if got_real_frame {
             underruns_consecutive = 0;
@@ -2090,17 +1849,7 @@ async fn main() -> Result<()> {
 
     let persist_file = resolve_repo_relative(&get_env("TSBOT_VOICE_STATE_FILE", "./logs/voice_state.json"));
 
-    let mut init_status = SharedStatus {
-        state: 1, // STATE_IDLE
-        now_playing_title: String::new(),
-        now_playing_source_url: String::new(),
-        volume_percent: 100,
-        fx_pan: 0.0,
-        fx_width: 1.0,
-        fx_swap_lr: false,
-        fx_bass_db: 0.0,
-        fx_reverb_mix: 0.0,
-    };
+    let mut init_status = SharedStatus::idle();
 
     if let Some(ps) = load_persisted_voice_state(&persist_file) {
         init_status.volume_percent = ps.volume_percent.clamp(0, 200);

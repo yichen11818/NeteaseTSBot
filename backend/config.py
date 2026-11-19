@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
     
     cookie_key: str = "dev-cookie-key"
     netease_api_base: str = "http://47.113.188.213:3000/"
+    netease_default_quality: str = "auto"
+    qqmusic_default_quality: str = "320"
     
     # 日志配置
     log_level: str = "INFO"
@@ -38,6 +41,7 @@ class Settings(BaseSettings):
     admin_token: str = ""
     initial_admin_password: str = ""
     initial_password_file: str = "./logs/initial-admin-password.txt"
+    session_cookie_name: str = Field(default="tsbot_admin_session", pattern=r"^[A-Za-z0-9_-]+$")
     voice_config_file: str = "./logs/voice-service.json"
     web_app_name: str = "Yumi TSBot"
     web_app_icon: str = ""
@@ -48,6 +52,13 @@ class Settings(BaseSettings):
     bilibili_audio_cache_ttl_hours: int = 72
     bilibili_audio_cache_max_mb: int = 2048
     bilibili_audio_partial_ttl_minutes: int = 60
+    playback_recovery_enabled: bool = True
+    playback_retry_count: int = 3
+    playback_retry_initial_delay_seconds: int = 15
+    playback_retry_max_delay_seconds: int = 60
+    playback_exhausted_action: str = "SKIP"
+    playback_cooldown_seconds: int = 300
+    playback_failed_tracks_before_cooldown: int = 3
 
     def get_api_tokens(self) -> list[str]:
         tokens: list[str] = []

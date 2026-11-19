@@ -1,5 +1,5 @@
 import { apiPost } from '../api'
-import { getNeteaseQualityLevel, type NeteaseQualityLevel } from './neteaseQuality'
+import { neteaseQualityPayload, type NeteaseQualityLevel } from './neteaseQuality'
 
 type ArtistLike = {
   name?: string
@@ -79,7 +79,7 @@ export function buildNeteaseQueuePayload(
     album: getTrackAlbum(track),
     duration_ms: getTrackDurationMs(track),
     cover_url: getTrackCoverUrl(track),
-    level: level || getNeteaseQualityLevel(),
+    ...neteaseQualityPayload(level),
     play_now: playNow,
   }
 }

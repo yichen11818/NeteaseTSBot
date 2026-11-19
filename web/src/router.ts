@@ -12,9 +12,10 @@ import SettingsView from './views/SettingsView.vue'
 import LoginView from './views/LoginView.vue'
 import ChangePasswordView from './views/ChangePasswordView.vue'
 import { refreshAuth } from './auth'
+import { routerBase } from './servers'
 
 export const router = createRouter({
-  history: DEMO_MODE ? createWebHashHistory(import.meta.env.BASE_URL) : createWebHistory(import.meta.env.BASE_URL),
+  history: DEMO_MODE ? createWebHashHistory(import.meta.env.BASE_URL) : createWebHistory(routerBase()),
   routes: [
     { path: '/', redirect: '/search' },
     { path: '/search', component: SearchView },

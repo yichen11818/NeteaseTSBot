@@ -16,7 +16,7 @@ from .logger import logger
 from .models import AdminCredential, AdminSession
 
 
-SESSION_COOKIE = "tsbot_admin_session"
+SESSION_COOKIE = settings.session_cookie_name
 SESSION_DAYS = 7
 PBKDF2_ITERATIONS = 600_000
 

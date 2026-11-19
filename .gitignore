@@ -108,3 +108,9 @@ backend/_generated/
 # Text files (if they contain sensitive data)
 txt
 tsbot.env
+
+# Local multi-server deployment and per-server persistent data
+/servers.json
+instances/
+.multi-server/
+docker-compose.multi.json

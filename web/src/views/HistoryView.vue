@@ -2,6 +2,8 @@
 import { artworkUrl } from '../utils/artwork'
 import { onMounted, ref } from 'vue'
 import { apiGet, apiPost } from '../api'
+import { neteaseQualityPayload } from '../utils/neteaseQuality'
+import { qqmusicQualityPayload } from '../utils/qqmusicQuality'
 import { 
   Clock, 
   Play, 
@@ -41,9 +43,15 @@ async function load() {
   }
 }
 
+function replayQuery(track: any, playNow: boolean): string {
+  const quality = String(track.track_id).startsWith('netease:') ? neteaseQualityPayload()
+    : String(track.track_id).startsWith('qqmusic:') ? qqmusicQualityPayload() : {}
+  return new URLSearchParams({ play_now: String(playNow), ...quality }).toString()
+}
+
 async function playTrack(track: any) {
   try {
-    await apiPost(`/history/${track.id}/replay?play_now=true`, {})
+    await apiPost(`/history/${track.id}/replay?${replayQuery(track, true)}`, {})
   } catch (e: any) {
     const msg = String(e?.message ?? e)
     showActionError(`点歌失败: ${msg}`)
@@ -52,7 +60,7 @@ async function playTrack(track: any) {
 
 async function addToQueue(track: any) {
   try {
-    await apiPost(`/history/${track.id}/replay?play_now=false`, {})
+    await apiPost(`/history/${track.id}/replay?${replayQuery(track, false)}`, {})
   } catch (e: any) {
     const msg = String(e?.message ?? e)
     showActionError(`添加到队列失败: ${msg}`)

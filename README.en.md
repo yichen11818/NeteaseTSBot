@@ -10,6 +10,10 @@ Listen together in your TeamSpeak channel. Search and queue **Netease Cloud Musi
 
 **NeteaseTSBot** supports **TeamSpeak 3 / 6**, with playback queues, lyrics, and prebuilt Docker images for self-hosting.
 
+**v1.0.0 major update:** independent multi-server playback from one project and Web console, plus playback recovery, per-provider quality, TS6 levels and security fixes. [Full release notes and linked issues](docs/releases/v1.0.0.md).
+
+**Multiple servers, one project:** one Web console can manage independent TeamSpeak bots, each with its own queue, volume, channel, music accounts, administrator and persistent data. Copy `servers.example.json` to `servers.json`, run `python scripts/multi_server.py --init-env`, then build and start the generated Compose project from source. Use the Web server selector to switch bots. See the [operations guide](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器) for setup, migration and verification scope. The existing startup scripts remain single-server entry points.
+
 [Get started](#start-with-prebuilt-docker-images) · [API reference](docs/API.md) · [Contribute](CONTRIBUTING.md) · [Report an issue](https://github.com/yichen11818/NeteaseTSBot/issues/new/choose) · [中文](README.md)
 
 **[Try the live demo →](https://yichen11818.github.io/NeteaseTSBot/)** Explore simulated search, queues, and lyrics without installing anything. The demo does not play real audio. [Demo deployment guide](docs/DEMO.md).
@@ -43,7 +47,7 @@ Netease features require your own `NeteaseCloudMusicApi` service. QQ Music and B
 
 For troubleshooting, run `docker compose -f docker-compose.prebuilt.yml logs --tail=100 backend voice-service`. See [source installation](#quick-start-recommended) and [Docker options](#docker-deployment) for more detail.
 
-The **PCM prefetch limit (seconds)** setting is available under system settings → advanced → services and logs. It defaults to 5 seconds and accepts integers from 1 to 30. It bounds decoded audio held ahead of playback for every source; a full buffer makes the reader wait without discarding frames or limiting track duration. The bounded reader channel adds about 1 second on Linux (4 seconds on Windows), and the decoder/process have their own overhead, so this is not a total process-memory limit.
+The **PCM prefetch limit (seconds)** setting is available under system settings → advanced → services and logs. It defaults to 5 seconds and accepts integers from 1 to 30. It bounds decoded audio held ahead of playback for every source; a full buffer makes the reader wait without discarding frames or limiting track duration. This limit controls the bounded reader channel itself, without an additional PCM queue; the decoder/process have their own overhead, so this is not a total process-memory limit.
 
 Save stages the change; Apply restarts Voice and interrupts active playback, following the existing Voice settings flow. `TSBOT_VOICE_PCM_BUFFER_SECONDS` seeds a new database setting or configures standalone Voice; existing persisted settings take precedence. Missing, non-integer or out-of-range standalone values fall back to 5 seconds. Unlimited buffering is not supported.
 
@@ -333,7 +337,7 @@ docker compose down
 
 Compose starts 3 services by default:
 
-- `voice-service` (`50051`)
+- `voice-service` (`50051` inside the container network only; see [local debugging](HOWTOSTART.md#docker-运行))
 - `backend` (`8009`)
 - `web` (`8080`, Nginx serves the production frontend bundle and reverse-proxies `/api/*` to backend)
 
@@ -367,7 +371,7 @@ Notes:
 
 - GitHub **Packages** only shows GHCR packages, so it stays empty if you only push to Docker Hub.
 - Seeing **3 image repositories** is expected because the project publishes `backend`, `web`, and `voice-service` separately.
-- GitHub **Releases** also includes `tsbot-<version>-linux-amd64.tar.gz` and `SHA256SUMS.txt`; those are downloadable bundles, not container images.
+- GitHub **Releases** also includes `tsbot-<version>-linux-amd64.tar.gz` and `SHA256SUMS.txt`; those are downloadable bundles, not container images. From v1.0.0, bundles include all tracked sources, multi-server deployment tools, the compiled Voice binary and Web assets. See the operations guide for usage.
 
 ## Default Ports
 
@@ -478,7 +482,7 @@ The acknowledgments below are based on commit, pull request, and issue history. 
 | [@yichen11818](https://github.com/yichen11818) | Project creation and maintenance, core features, deployment support, documentation, and community support. |
 | [@BreadAira](https://github.com/BreadAira) | Fixes for Netease cookie parsing, Bilibili covers, shared audio files and Chromium in Docker deployments ([PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9), [Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)). |
 | [@Marius128](https://github.com/Marius128) | Optional TeamSpeak user levels, Bilibili chat playback commands, and accompanying documentation and tests ([PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)). |
-| [@nitonitori](https://github.com/nitonitori) | Netease automatic quality fallback on risk-control errors, direct playlist ID imports, and accompanying documentation and regression tests ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), merged). |
+| [@nitonitori](https://github.com/nitonitori) | Netease automatic quality fallback on risk-control errors, direct playlist ID imports, configurable playback recovery and cooldown, separate Netease and QQ Music quality defaults, and the backend Playwright image build fix ([PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22), [#23](https://github.com/yichen11818/NeteaseTSBot/pull/23), [#26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), [#31](https://github.com/yichen11818/NeteaseTSBot/pull/31), all merged). Thank you for the accompanying documentation, regression tests, and fixes addressing review findings. |
 
 ### Proposals, Reports, and Verification
 
@@ -486,7 +490,6 @@ The acknowledgments below are based on commit, pull request, and issue history. 
 | --- | --- |
 | [@yume2017cn](https://github.com/yume2017cn) | Proposed shuffle, playlist selection, queue clearing, and other chat commands; investigated search display and playback state. The chat requirements were subsequently reimplemented by the maintainer ([PR #10](https://github.com/yichen11818/NeteaseTSBot/pull/10)). |
 | [@Yz017](https://github.com/Yz017) | Submitted a project organization proposal ([PR #12](https://github.com/yichen11818/NeteaseTSBot/pull/12), not merged). |
-| [@nitonitori](https://github.com/nitonitori) | Proposed and tested automatic continuation retries and configurable chat quality ([PR #26](https://github.com/yichen11818/NeteaseTSBot/pull/26), [#27](https://github.com/yichen11818/NeteaseTSBot/pull/27), awaiting review). |
 | [@Ideenaster](https://github.com/Ideenaster) | Detailed reproduction, root-cause analysis, a suggested fix, and playback verification for the repeat-all queue deletion bug ([Issue #13](https://github.com/yichen11818/NeteaseTSBot/issues/13)). |
 | [@TICK077](https://github.com/TICK077) | Investigated Netease and QQ Music deployment, search, and login issues, providing logs and API results ([Issue #11](https://github.com/yichen11818/NeteaseTSBot/issues/11)). |
 | [@screamingshark](https://github.com/screamingshark) | Reported and verified Docker frontend/backend connectivity issues and shared Netease VIP playback and API findings ([Issue #4](https://github.com/yichen11818/NeteaseTSBot/issues/4), [#7](https://github.com/yichen11818/NeteaseTSBot/issues/7)). |

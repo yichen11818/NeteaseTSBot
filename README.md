@@ -10,6 +10,8 @@
 
 **NeteaseTSBot** 支持 **TeamSpeak 3 / 6**，提供播放队列、歌词和 Docker 预构建镜像，可自行部署。
 
+**v1.0.0 重大更新：** 一个项目连接多个服务器，独立播放并在 Web 中切换；同时汇总播放恢复、分平台音质、TS6 等级及安全修复。[完整更新与关联 Issue](docs/releases/v1.0.0.md)。
+
 [快速部署](#先把机器人跑起来) · [聊天指令](#teamspeak-聊天指令) · [API 文档](docs/API.md) · [参与贡献](CONTRIBUTING.md) · [反馈问题](https://github.com/yichen11818/NeteaseTSBot/issues/new/choose)
 
 **[在线体验 →](https://yichen11818.github.io/NeteaseTSBot/)** 无需安装即可体验模拟搜索、队列和歌词；不播放真实音频。[演示部署说明](docs/DEMO.md)
@@ -99,6 +101,8 @@ TSBot 的目标是把边界重新划清：
 - **backend/**: Python/FastAPI 后端（队列/搜索/网易云与 QQ 音乐接口/控制语音服务）
 - **voice-service/**: Rust 语音服务（连接 TeamSpeak、播放音频，提供 gRPC 给后端调用）
 - **web/**: Vue3 + Vite 前端（Web 控制台/播放器 UI）
+
+支持在**一个 Compose 项目、一个 Web 入口**下连接多台 TeamSpeak 服务器。各服务器独立运行后端和语音服务，分别管理队列、音量、频道、管理员与音乐账号；网页顶部切换服务器。复制 `servers.example.json` 为 `servers.json`，运行 `python scripts/multi_server.py --init-env` 生成部署配置，再从源码构建启动。完整步骤、旧数据迁移及验证范围见 [多服务器运行指南](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器)。
 
 更多文档：
 
@@ -243,7 +247,7 @@ cp tsbot.env.example tsbot.env
 
 设置页右上角的“保存配置”只把当前表单持久化到数据库，适合先分组检查配置；“应用配置”会合并所有已保存但尚未应用的改动，并更新运行中的服务。TeamSpeak 或 Voice 配置发生变化时，voice-service 会正常断开并自动使用新配置重启；Web 会等待新进程返回对应的配置版本后显示“已重启成功”，不需要给后端 Docker Socket 或 systemd 管理权限。
 
-“系统配置 → 高级设置 → 服务与日志”中的 **PCM 预缓冲上限（秒）**控制 Voice 提前解码的音频量，默认 5 秒，可设为 1–30 秒。缓冲满后读取端等待播放消耗，长歌曲仍能完整播放，不会因超过缓冲长度而被截断或跳过。该限制适用于所有音乐来源，与歌曲总时长和压缩音质等级无关。Linux 的读取通道另有约 1 秒有界缓冲（Windows 约 4 秒）；进程和解码器本身也有内存开销，因此该值不是进程总内存限制。
+“系统配置 → 高级设置 → 服务与日志”中的 **PCM 预缓冲上限（秒）**控制 Voice 提前解码的音频量，默认 5 秒，可设为 1–30 秒。缓冲满后读取端等待播放消耗，长歌曲仍能完整播放，不会因超过缓冲长度而被截断或跳过。该限制适用于所有音乐来源，与歌曲总时长和压缩音质等级无关。该上限直接控制读取通道，不再维护额外 PCM 队列；进程和解码器本身也有内存开销，因此该值不是进程总内存限制。
 
 此项沿用“保存配置 / 应用配置”的流程，应用时会重启 Voice，正在播放的内容会中断。`TSBOT_VOICE_PCM_BUFFER_SECONDS` 可用于首次导入或独立运行 Voice；已有数据库配置优先。独立 Voice 遇到缺失、非整数或超出 1–30 范围的环境值时使用安全默认值 5 秒，不提供无限缓冲选项。
 
@@ -386,7 +390,7 @@ docker compose down
 
 Compose 默认会启动 3 个服务：
 
-- `voice-service`（50051）
+- `voice-service`（仅容器网络内的 `50051`，不映射宿主机；调试方式见 [运行指南](HOWTOSTART.md#docker-运行)）
 - `backend`（8009）
 - `web`（8080，Nginx 托管生产前端产物，并将 `/api/*` 反向代理到 backend）
 
@@ -420,7 +424,7 @@ docker compose -f docker-compose.prebuilt.yml up -d
 
 - GitHub 的 **Packages** 页面只显示 GHCR 包；如果只推 Docker Hub，这里会是空的。
 - 现在会看到 **3 个镜像仓库**，这是正常现象，因为项目按 `backend` / `web` / `voice-service` 三个服务分别构建与发布。
-- GitHub 的 **Releases** 页面会额外附带 `tsbot-<version>-linux-amd64.tar.gz` 和 `SHA256SUMS.txt`，那是软件包，不是容器镜像。
+- GitHub 的 **Releases** 页面会额外附带 `tsbot-<version>-linux-amd64.tar.gz` 和 `SHA256SUMS.txt`，那是软件包，不是容器镜像。自 v1.0.0 起包含完整跟踪源码、多服务器部署工具、预编译 Voice 二进制与 Web 产物；使用方法见运行指南。
 
 ## 默认端口
 
@@ -551,7 +555,7 @@ B 站后台授权支持扫码登录或手动 Cookie，用于登录态接口和 A
 | [@yichen11818](https://github.com/yichen11818) | 项目发起与维护、核心功能开发、部署支持、文档和社区反馈处理。 |
 | [@BreadAira](https://github.com/BreadAira) | 修复网易云 Cookie 解析、B 站封面加载和 Docker 环境音频共享、Chromium 等问题（[PR #9](https://github.com/yichen11818/NeteaseTSBot/pull/9)、[Issue #8](https://github.com/yichen11818/NeteaseTSBot/issues/8)）。 |
 | [@Marius128](https://github.com/Marius128) | 贡献可选的 TeamSpeak 用户等级系统、B 站聊天点播，以及相应文档和测试（[PR #19](https://github.com/yichen11818/NeteaseTSBot/pull/19)）。 |
-| [@nitonitori](https://github.com/nitonitori) | 贡献网易云风控时的自动音质回退、按 ID 直接导入歌单，以及相应文档和回归测试（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)，已合并）。 |
+| [@nitonitori](https://github.com/nitonitori) | 贡献网易云风控时的自动音质回退、按 ID 直接导入歌单、可配置的播放恢复与冷却、网易云与 QQ 音乐独立默认音质，以及后端 Playwright 镜像构建修复（[PR #22](https://github.com/yichen11818/NeteaseTSBot/pull/22)、[#23](https://github.com/yichen11818/NeteaseTSBot/pull/23)、[#26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)、[#31](https://github.com/yichen11818/NeteaseTSBot/pull/31)，均已合并）。感谢同步完善文档与回归测试，并根据评审修复边界问题。 |
 
 ### 功能提案、问题反馈与验证
 
@@ -559,7 +563,6 @@ B 站后台授权支持扫码登录或手动 Cookie，用于登录态接口和 A
 | --- | --- |
 | [@yume2017cn](https://github.com/yume2017cn) | 提交随机播放、歌单选择、清空队列等聊天指令方案，并参与搜索显示与播放状态排查；相关聊天需求后续由维护者重新实现（[PR #10](https://github.com/yichen11818/NeteaseTSBot/pull/10)）。 |
 | [@Yz017](https://github.com/Yz017) | 提交项目梳理提案（[PR #12](https://github.com/yichen11818/NeteaseTSBot/pull/12)，未合并）。 |
-| [@nitonitori](https://github.com/nitonitori) | 提交自动续播重试和聊天默认音质的方案与测试（[PR #26](https://github.com/yichen11818/NeteaseTSBot/pull/26)、[#27](https://github.com/yichen11818/NeteaseTSBot/pull/27)，待评审）。 |
 | [@Ideenaster](https://github.com/Ideenaster) | 提供列表循环清空队列问题的详细复现、原因分析、修复建议和实际播放验证（[Issue #13](https://github.com/yichen11818/NeteaseTSBot/issues/13)）。 |
 | [@TICK077](https://github.com/TICK077) | 协助排查网易云与 QQ 音乐的部署、搜索和登录问题，并持续补充日志与接口结果（[Issue #11](https://github.com/yichen11818/NeteaseTSBot/issues/11)）。 |
 | [@screamingshark](https://github.com/screamingshark) | 反馈并验证 Docker 前后端通信问题，补充网易云会员播放与 API 使用情况（[Issue #4](https://github.com/yichen11818/NeteaseTSBot/issues/4)、[#7](https://github.com/yichen11818/NeteaseTSBot/issues/7)）。 |

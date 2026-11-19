@@ -1,15 +1,21 @@
 import { getCsrfToken } from './session'
 import { DEMO_MODE } from './demoMode'
+import { currentServerId } from './servers'
 
 const RAW_API_BASE = (import.meta as any).env?.VITE_API_BASE || '/api'
-const API_BASE = String(RAW_API_BASE).replace(/\/+$/, '')
+const DEFAULT_API_BASE = String(RAW_API_BASE).replace(/\/+$/, '')
 const RAW_API_TOKEN = (import.meta as any).env?.VITE_API_TOKEN || ''
 const API_TOKEN = String(RAW_API_TOKEN).trim()
+
+function apiBase(): string {
+  const id = currentServerId()
+  return id ? `/api/servers/${id}` : DEFAULT_API_BASE
+}
 
 export function apiUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path
   const normalized = path.startsWith('/') ? path : `/${path}`
-  return `${API_BASE}${normalized}`
+  return `${apiBase()}${normalized}`
 }
 
 function buildHeaders(extraHeaders?: Record<string, string>, contentType?: string): Record<string, string> {
@@ -45,7 +51,7 @@ async function requestJson<T>(
     const { demoRequest } = await import('./demo/api')
     return demoRequest(path, init) as T
   }
-  const r = await fetch(`${API_BASE}${path}`, { ...init, credentials: 'include' })
+  const r = await fetch(`${apiBase()}${path}`, { ...init, credentials: 'include' })
   if (!r.ok) {
     const text = await r.text()
     let msg = (text || '').trim()

@@ -14,6 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  deployment:
+    name: Multi-server deployment configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python scripts/multi_server.py --config servers.example.json --init-env
+      - run: docker compose -f docker-compose.multi.json config --quiet
+      - name: Validate generated Nginx configuration
+        run: docker run --rm -v "$PWD/.multi-server:/etc/tsbot-multi:ro" nginx:1.30.2-alpine nginx -t -c /etc/tsbot-multi/nginx.conf
+
   backend:
     name: Backend regression tests
     runs-on: ubuntu-latest
@@ -61,4 +75,4 @@ jobs:
       # Use system Opus so audiopus_sys does not build its old bundled CMake project.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake pkg-config libopus-dev
       - run: cargo check --manifest-path voice-service/Cargo.toml
-      - run: cargo test --manifest-path voice-service/Cargo.toml pcm_buffer::tests
+      - run: cargo test --manifest-path voice-service/Cargo.toml

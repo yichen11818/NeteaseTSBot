@@ -24,4 +24,22 @@ describe('API transport isolation', () => {
     expect(await apiGet('/voice/status')).toEqual({ voice_connected: false })
     expect(fetch).toHaveBeenCalledWith('/api/voice/status', expect.objectContaining({ credentials: 'include' }))
   })
+
+  it('routes controls, uploads and assets to the selected server even with a legacy API base', async () => {
+    vi.stubEnv('VITE_API_BASE', 'https://legacy.example/api')
+    vi.stubGlobal('window', { location: { pathname: '/s/friends/queue' } })
+    const fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')))
+    vi.stubGlobal('fetch', fetch)
+    const { apiGet, apiPut, apiPutFile, apiUrl } = await import('./api')
+    const { setCsrfToken } = await import('./session')
+    setCsrfToken('friends-csrf')
+    await apiGet('/queue')
+    await apiPut('/voice/volume', { volume: 35 })
+    await apiPutFile('/admin/assets/teamspeak-avatar', new File(['image'], 'avatar.png', { type: 'image/png' }))
+    expect(fetch.mock.calls.map(call => call[0])).toEqual([
+      '/api/servers/friends/queue', '/api/servers/friends/voice/volume', '/api/servers/friends/admin/assets/teamspeak-avatar',
+    ])
+    expect(fetch.mock.calls[1][1].headers['X-CSRF-Token']).toBe('friends-csrf')
+    expect(apiUrl('/assets/web-app-icon')).toBe('/api/servers/friends/assets/web-app-icon')
+  })
 })

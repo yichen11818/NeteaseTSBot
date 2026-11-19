@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { apiGet, apiPost } from '../api'
+import { apiPost } from '../api'
 import { buildNeteaseQueuePayload } from '../utils/queue'
 import { 
   Heart, 
@@ -14,20 +14,9 @@ import {
 import { getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 import FloatingErrorToast from '../components/FloatingErrorToast.vue'
 import { useTransientMessage } from '../composables/useTransientMessage'
-import { DEMO_MODE } from '../demoMode'
+import { useNeteaseLikes } from '../composables/useNeteaseLikes'
 
-const USER_COOKIE_KEY = 'tsbot_user_netease_cookie'
-const LIKES_CACHE_KEY = 'tsbot_likes_cache'
-const LIKES_CACHE_DURATION = 150 * 60 * 1000 // 5分钟缓存
-
-const PAGE_SIZE = 200
-
-const error = ref('')
-const likes = ref<any>(null)
-const loading = ref(false)
-
-const offset = ref(0)
-const hasMore = ref(false)
+const { error, likes, loading, hasMore, load, loadMore } = useNeteaseLikes()
 const { message: actionError, showMessage: showActionError } = useTransientMessage()
 
 const favoriteSongIds = ref<Set<number>>(new Set())
@@ -45,109 +34,6 @@ function isLocalFavorite(song: any): boolean {
 function toggleLocalFavorite(song: any) {
   toggleFavoriteSong(song)
   refreshFavoriteSongIds()
-}
-
-// 缓存相关函数
-function getCachedLikes(): any | null {
-  try {
-    const cached = localStorage.getItem(LIKES_CACHE_KEY)
-    if (!cached) return null
-    
-    const { data, timestamp } = JSON.parse(cached)
-    const now = Date.now()
-    
-    // 检查缓存是否过期
-    if (now - timestamp > LIKES_CACHE_DURATION) {
-      localStorage.removeItem(LIKES_CACHE_KEY)
-      return null
-    }
-    
-    return data
-  } catch {
-    return null
-  }
-}
-
-function setCachedLikes(data: any): void {
-  try {
-    const cacheData = {
-      data,
-      timestamp: Date.now()
-    }
-    localStorage.setItem(LIKES_CACHE_KEY, JSON.stringify(cacheData))
-  } catch {
-    // 忽略缓存写入错误
-  }
-}
-
-function clearCachedLikes(): void {
-  localStorage.removeItem(LIKES_CACHE_KEY)
-}
-
-async function load(forceRefresh = false) {
-  loading.value = true
-  error.value = ''
-  
-  // 如果不是强制刷新，先尝试从缓存读取
-  if (!forceRefresh) {
-    const cachedData = getCachedLikes()
-    if (cachedData) {
-      likes.value = cachedData
-      offset.value = Number(cachedData?.offset ?? 0) + (Number(cachedData?.limit ?? 0) || PAGE_SIZE)
-      hasMore.value = Boolean(cachedData?.has_more)
-      loading.value = false
-      refreshFavoriteSongIds()
-      return
-    }
-  }
-  
-  // 重置状态并重新加载
-  likes.value = null
-  offset.value = 0
-  hasMore.value = false
-  
-  try {
-    const cookie = localStorage.getItem(USER_COOKIE_KEY) || ''
-    if (!cookie && !DEMO_MODE) {
-      throw new Error('需要先设置网易云音乐 Cookie')
-    }
-    const data = await apiGet<any>(`/netease/likes?offset=0&limit=${PAGE_SIZE}`, { 'X-Netease-Cookie': cookie })
-    likes.value = data
-    offset.value = Number(data?.offset ?? 0) + (Number(data?.limit ?? 0) || PAGE_SIZE)
-    hasMore.value = Boolean(data?.has_more)
-    
-    // 缓存数据
-    setCachedLikes(data)
-  } catch (e: any) {
-    error.value = String(e?.message ?? e)
-  } finally {
-    loading.value = false
-    refreshFavoriteSongIds()
-  }
-}
-
-async function loadMore() {
-  if (loading.value || !hasMore.value) return
-
-  loading.value = true
-  error.value = ''
-  try {
-    const cookie = localStorage.getItem(USER_COOKIE_KEY) || ''
-    if (!cookie && !DEMO_MODE) {
-      throw new Error('需要先设置网易云音乐 Cookie')
-    }
-    const data = await apiGet<any>(`/netease/likes?offset=${offset.value}&limit=${PAGE_SIZE}`, { 'X-Netease-Cookie': cookie })
-    const prev = likes.value || {}
-    const prevSongs = Array.isArray(prev?.songs) ? prev.songs : []
-    const nextSongs = Array.isArray(data?.songs) ? data.songs : []
-    likes.value = { ...prev, ...data, songs: [...prevSongs, ...nextSongs] }
-    offset.value = Number(data?.offset ?? offset.value) + (Number(data?.limit ?? 0) || PAGE_SIZE)
-    hasMore.value = Boolean(data?.has_more)
-  } catch (e: any) {
-    error.value = String(e?.message ?? e)
-  } finally {
-    loading.value = false
-  }
 }
 
 async function playTrack(song: any) {

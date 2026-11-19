@@ -11,3 +11,13 @@ logs
 data
 *.db
 *.log
+tsbot.env
+servers.json
+instances
+.multi-server
+docker-compose.multi.json
+!web/public/servers.json
+backend/.env
+tmp/multi-server-*
+output/playwright
+.playwright-cli

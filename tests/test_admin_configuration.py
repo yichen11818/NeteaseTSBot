@@ -154,40 +154,40 @@ class RuntimeSettingsTests(unittest.TestCase):
         self.assertEqual((5, 1, 30, "integer", "backend", "voice"), (
             field["value"], field["minimum"], field["maximum"], field["type"], field["group"], field["restart"],
         ))
-        written = json.loads(self.voice_file.read_text())
+        written = json.loads(self.voice_file.read_text(encoding="utf-8"))
         self.assertEqual("5", written["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
 
     def test_pcm_buffer_save_stages_until_apply_and_reset_restores_default(self) -> None:
-        before = self.voice_file.read_text()
+        before = self.voice_file.read_text(encoding="utf-8")
         effects = update_settings(self.session, {"voice.pcm_buffer_seconds": 10}, apply=False)
         self.assertIn("voice", effects)
-        self.assertEqual(before, self.voice_file.read_text())
+        self.assertEqual(before, self.voice_file.read_text(encoding="utf-8"))
         self.assertTrue(settings_payload(self.session)["apply_pending"])
         update_settings(self.session, {}, apply=True)
-        self.assertEqual("10", json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+        self.assertEqual("10", json.loads(self.voice_file.read_text(encoding="utf-8"))["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
         self.assertFalse(settings_payload(self.session)["apply_pending"])
         update_settings(self.session, {"voice.pcm_buffer_seconds": None})
-        self.assertEqual("5", json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+        self.assertEqual("5", json.loads(self.voice_file.read_text(encoding="utf-8"))["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
 
     def test_pcm_buffer_rejects_invalid_values_without_partial_update(self) -> None:
         definition = DEFINITION_BY_KEY["voice.pcm_buffer_seconds"]
         name_definition = DEFINITION_BY_KEY["web.app_name"]
         before_name = get_value(self.session, name_definition)
-        before_file = self.voice_file.read_text()
+        before_file = self.voice_file.read_text(encoding="utf-8")
         for invalid in (0, -1, 31, True, 1.5, "1.5", "invalid", "０"):
             with self.subTest(value=invalid), self.assertRaises(HTTPException) as raised:
                 update_settings(self.session, {"voice.pcm_buffer_seconds": invalid, "web.app_name": "must-not-persist"})
             self.assertEqual(422, raised.exception.status_code)
             self.assertEqual(5, get_value(self.session, definition))
             self.assertEqual(before_name, get_value(self.session, name_definition))
-            self.assertEqual(before_file, self.voice_file.read_text())
+            self.assertEqual(before_file, self.voice_file.read_text(encoding="utf-8"))
 
     def test_pcm_buffer_boundaries_are_written_to_voice_configuration(self) -> None:
         for seconds in (1, 30):
             with self.subTest(seconds=seconds):
                 effects = update_settings(self.session, {"voice.pcm_buffer_seconds": seconds})
                 self.assertIn("voice", effects)
-                self.assertEqual(str(seconds), json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+                self.assertEqual(str(seconds), json.loads(self.voice_file.read_text(encoding="utf-8"))["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
 
     def test_pcm_buffer_imports_environment_once_and_persists(self) -> None:
         definition = DEFINITION_BY_KEY["voice.pcm_buffer_seconds"]
@@ -199,7 +199,7 @@ class RuntimeSettingsTests(unittest.TestCase):
         with patch.dict(os.environ, {"TSBOT_VOICE_PCM_BUFFER_SECONDS": "3"}):
             initialize_runtime_settings(self.session)
             self.assertEqual(12, get_value(self.session, definition))
-            self.assertEqual("12", json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+            self.assertEqual("12", json.loads(self.voice_file.read_text(encoding="utf-8"))["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
 
     def test_pcm_buffer_invalid_environment_uses_safe_default(self) -> None:
         definition = DEFINITION_BY_KEY["voice.pcm_buffer_seconds"]
@@ -209,7 +209,7 @@ class RuntimeSettingsTests(unittest.TestCase):
             with self.subTest(value=invalid), patch.dict(os.environ, {"TSBOT_VOICE_PCM_BUFFER_SECONDS": invalid}):
                 initialize_runtime_settings(self.session)
                 self.assertEqual(5, get_value(self.session, definition))
-                self.assertEqual("5", json.loads(self.voice_file.read_text())["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
+                self.assertEqual("5", json.loads(self.voice_file.read_text(encoding="utf-8"))["TSBOT_VOICE_PCM_BUFFER_SECONDS"])
 
     def test_save_only_stages_voice_change_until_apply(self) -> None:
         before = self.voice_file.read_text(encoding="utf-8")

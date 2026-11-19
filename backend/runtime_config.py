@@ -12,6 +12,8 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .music_quality import NETEASE_QUALITIES
+from .queue_quality import QQMUSIC_QUALITIES
 from .crypto import decrypt_text, encrypt_text
 from .models import AppSetting
 from .logger import reconfigure_logger
@@ -36,12 +38,15 @@ class SettingDefinition:
     options: tuple[str, ...] = ()
     help: str = ""
     backend_attr: str = ""
+    strict_integer: bool = False
 
 
 DEFINITIONS: tuple[SettingDefinition, ...] = (
     SettingDefinition("web.app_name", "web", "界面名称", env="TSBOT_WEB_APP_NAME", default="Yumi TSBot", backend_attr="web_app_name"),
     SettingDefinition("web.log_level", "web", "Web 日志等级", type="select", env="VITE_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARN", "ERROR"), backend_attr="web_log_level"),
-    SettingDefinition("backend.netease_api_base", "music", "网易云 API 地址", type="url", env="TSBOT_NETEASE_API_BASE", default="http://127.0.0.1:3000/", backend_attr="netease_api_base"),
+    SettingDefinition("backend.netease_api_base", "music_netease", "网易云 API 地址", type="url", env="TSBOT_NETEASE_API_BASE", default="http://127.0.0.1:3000/", backend_attr="netease_api_base"),
+    SettingDefinition("backend.netease_default_quality", "music_netease", "默认请求音质", type="select", env="TSBOT_NETEASE_DEFAULT_QUALITY", default="auto", options=NETEASE_QUALITIES, backend_attr="netease_default_quality", help="auto 为自动最高，不是跟随服务器。账号权限与平台风控可能限制实际播放音质；自动最高保留原有标准音质回退。只影响新点播。"),
+    SettingDefinition("backend.qqmusic_default_quality", "music_qqmusic", "默认请求音质", type="select", env="TSBOT_QQMUSIC_DEFAULT_QUALITY", default="320", options=QQMUSIC_QUALITIES, backend_attr="qqmusic_default_quality", help="当前适配器支持 M4A、MP3 128 和 MP3 320。请求音质不保证实际格式或完整歌曲，会员权限、资源与试听限制仍适用。只影响新点播。"),
     SettingDefinition("backend.voice_grpc_addr", "backend", "Voice gRPC 地址", env="TSBOT_VOICE_GRPC_ADDR", default="127.0.0.1:50051", backend_attr="voice_grpc_addr"),
     SettingDefinition("backend.log_level", "backend", "后端日志等级", type="select", env="TSBOT_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARNING", "ERROR"), backend_attr="log_level"),
     SettingDefinition("backend.log_file", "backend", "后端日志文件", env="TSBOT_LOG_FILE", default="logs/backend.log", backend_attr="log_file"),
@@ -50,6 +55,13 @@ DEFINITIONS: tuple[SettingDefinition, ...] = (
     SettingDefinition("backend.bilibili_audio_cache_ttl_hours", "music", "B站缓存保留时间（小时）", type="integer", env="TSBOT_BILIBILI_AUDIO_CACHE_TTL_HOURS", default=72, minimum=0, maximum=8760, backend_attr="bilibili_audio_cache_ttl_hours"),
     SettingDefinition("backend.bilibili_audio_cache_max_mb", "music", "B站缓存上限（MiB）", type="integer", env="TSBOT_BILIBILI_AUDIO_CACHE_MAX_MB", default=2048, minimum=0, maximum=1048576, backend_attr="bilibili_audio_cache_max_mb"),
     SettingDefinition("backend.bilibili_audio_partial_ttl_minutes", "music", "未完成下载保留时间（分钟）", type="integer", env="TSBOT_BILIBILI_AUDIO_PARTIAL_TTL_MINUTES", default=60, minimum=0, maximum=10080, backend_attr="bilibili_audio_partial_ttl_minutes"),
+    SettingDefinition("backend.playback_recovery_enabled", "recovery", "自动恢复播放", type="boolean", env="TSBOT_PLAYBACK_RECOVERY_ENABLED", default=True, backend_attr="playback_recovery_enabled", help="对音乐源临时故障安排重试。关闭并应用后会取消等待中的恢复任务，不中断正常播放。"),
+    SettingDefinition("backend.playback_retry_count", "recovery", "重试次数", type="integer", env="TSBOT_PLAYBACK_RETRY_COUNT", default=3, minimum=0, maximum=10, backend_attr="playback_retry_count", strict_integer=True, help="不包含首次请求；0 表示首次失败后直接执行下方的耗尽策略。"),
+    SettingDefinition("backend.playback_retry_initial_delay_seconds", "recovery", "首次重试间隔（秒）", type="integer", env="TSBOT_PLAYBACK_RETRY_INITIAL_DELAY_SECONDS", default=15, minimum=5, maximum=300, backend_attr="playback_retry_initial_delay_seconds", strict_integer=True),
+    SettingDefinition("backend.playback_retry_max_delay_seconds", "recovery", "最大重试间隔（秒）", type="integer", env="TSBOT_PLAYBACK_RETRY_MAX_DELAY_SECONDS", default=60, minimum=5, maximum=3600, backend_attr="playback_retry_max_delay_seconds", strict_integer=True, help="间隔按倍数增加，直到此上限；不能小于首次间隔。"),
+    SettingDefinition("backend.playback_exhausted_action", "recovery", "重试耗尽后的动作", type="select", env="TSBOT_PLAYBACK_EXHAUSTED_ACTION", default="SKIP", options=("SKIP", "WAIT"), backend_attr="playback_exhausted_action", help="SKIP：本轮暂时跳过，保留队列条目；WAIT：保留当前目标，冷却后开启下一轮重试。"),
+    SettingDefinition("backend.playback_cooldown_seconds", "recovery", "冷却时间（秒）", type="integer", env="TSBOT_PLAYBACK_COOLDOWN_SECONDS", default=300, minimum=30, maximum=3600, backend_attr="playback_cooldown_seconds", strict_integer=True),
+    SettingDefinition("backend.playback_failed_tracks_before_cooldown", "recovery", "连续失败曲目数上限", type="integer", env="TSBOT_PLAYBACK_FAILED_TRACKS_BEFORE_COOLDOWN", default=3, minimum=1, maximum=100, backend_attr="playback_failed_tracks_before_cooldown", strict_integer=True, help="达到此数量后先冷却，防止音乐源整体异常时快速遍历队列。"),
     SettingDefinition("voice.ts3_host", "teamspeak", "TeamSpeak 服务器", env="TSBOT_TS3_HOST", default="127.0.0.1", restart="voice"),
     SettingDefinition("voice.ts3_port", "teamspeak", "TeamSpeak 端口", type="integer", env="TSBOT_TS3_PORT", default=9987, minimum=1, maximum=65535, restart="voice"),
     SettingDefinition("voice.ts3_nickname", "teamspeak", "机器人昵称", env="TSBOT_TS3_NICKNAME", default="tsbot", restart="voice"),
@@ -69,7 +81,7 @@ DEFINITIONS: tuple[SettingDefinition, ...] = (
     SettingDefinition("voice.serverquery_sid", "serverquery", "虚拟服务器 SID", env="TSBOT_TS3_SERVERQUERY_SID", restart="voice"),
     SettingDefinition("voice.serverquery_use_port", "serverquery", "语音端口映射", type="integer", env="TSBOT_TS3_SERVERQUERY_USE_PORT", default=9987, minimum=1, maximum=65535, restart="voice"),
     SettingDefinition("voice.log_level", "backend", "Voice 日志等级", type="select", env="TSBOT_VOICE_LOG_LEVEL", default="INFO", options=("DEBUG", "INFO", "WARNING", "ERROR"), restart="voice"),
-    SettingDefinition("voice.pcm_buffer_seconds", "backend", "PCM 预缓冲上限（秒）", type="integer", env="TSBOT_VOICE_PCM_BUFFER_SECONDS", default=5, minimum=1, maximum=30, restart="voice", help="限制提前解码的音频量，不限制歌曲时长。缓冲满后等待播放消耗，不丢帧或跳歌；应用配置后 Voice 会重启。读取通道另有少量有界缓冲。"),
+    SettingDefinition("voice.pcm_buffer_seconds", "backend", "PCM 预缓冲上限（秒）", type="integer", env="TSBOT_VOICE_PCM_BUFFER_SECONDS", default=5, minimum=1, maximum=30, restart="voice", strict_integer=True, help="限制提前解码的音频量，不限制歌曲时长。缓冲满后等待播放消耗，不丢帧或跳歌；应用配置后 Voice 会重启。读取通道即为缓冲上限，解码器另有自身开销。"),
     SettingDefinition("voice.state_file", "backend", "播放状态文件", env="TSBOT_VOICE_STATE_FILE", default="./logs/voice_state.json", restart="voice"),
 )
 
@@ -89,18 +101,23 @@ def _env_value(definition: SettingDefinition) -> Any:
         raw = getattr(settings, definition.backend_attr, None)
     if raw is None or raw == "":
         return definition.default
-    if definition.key == "voice.pcm_buffer_seconds":
-        try:
-            return validate_value(definition, raw)
-        except (TypeError, ValueError):
-            return definition.default
     if definition.type == "integer":
+        if definition.strict_integer:
+            try:
+                return validate_value(definition, raw)
+            except (TypeError, ValueError):
+                return definition.default
         try:
             return int(raw)
         except (TypeError, ValueError):
             return definition.default
     if definition.type == "boolean":
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+    if definition.type == "select":
+        try:
+            return validate_value(definition, raw)
+        except ValueError:
+            return definition.default
     return str(raw)
 
 
@@ -128,6 +145,7 @@ def initialize_runtime_settings(session: Session) -> None:
     if pending is not None:
         session.delete(pending)
         changed = True
+    _validate_recovery_settings(session, {})
     if changed:
         session.commit()
     apply_backend_settings(session)
@@ -146,7 +164,7 @@ def get_value(session: Session, definition: SettingDefinition) -> Any:
 
 def validate_value(definition: SettingDefinition, value: Any) -> Any:
     if definition.type == "integer":
-        if definition.key == "voice.pcm_buffer_seconds" and not (
+        if definition.strict_integer and not (
             isinstance(value, int)
             or (isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()))
         ):
@@ -167,11 +185,27 @@ def validate_value(definition: SettingDefinition, value: Any) -> Any:
             raise ValueError("界面名称不能为空")
         if definition.type == "url" and not re.match(r"^https?://", value, re.IGNORECASE):
             raise ValueError("必须是 http:// 或 https:// 地址")
-        if definition.options and value.upper() not in definition.options:
-            raise ValueError("不支持的选项")
         if definition.options:
-            value = value.upper()
+            selected = next((option for option in definition.options if option.lower() == value.lower()), None)
+            if selected is None:
+                raise ValueError("不支持的选项")
+            value = selected
     return value
+
+
+def _validate_recovery_settings(session: Session, values: dict[str, Any]) -> None:
+    def prospective(key: str) -> Any:
+        definition = DEFINITION_BY_KEY[key]
+        if key in values:
+            return _env_value(definition) if values[key] is None else values[key]
+        return get_value(session, definition)
+
+    initial = prospective("backend.playback_retry_initial_delay_seconds")
+    maximum = prospective("backend.playback_retry_max_delay_seconds")
+    if initial > maximum:
+        raise HTTPException(status_code=422, detail={"fields": {
+            "backend.playback_retry_max_delay_seconds": "不能小于首次重试间隔",
+        }})
 
 
 def _pending_effects(session: Session) -> set[str]:
@@ -220,6 +254,8 @@ def update_settings(session: Session, values: dict[str, Any], *, apply: bool = T
             errors[key] = str(exc)
     if errors:
         raise HTTPException(status_code=422, detail={"fields": errors})
+
+    _validate_recovery_settings(session, normalized)
 
     for key, value in normalized.items():
         definition = DEFINITION_BY_KEY[key]
